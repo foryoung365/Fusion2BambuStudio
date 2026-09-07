@@ -1,0 +1,16 @@
+'use strict';
+const assert=require('node:assert/strict');
+const nav=require('../ui/plate-navigation.js');
+assert.deepEqual(nav.state([{index:1},{index:2},{index:3}],1),{previous:null,next:2,total:3});
+assert.deepEqual(nav.state([{index:1},{index:2},{index:3}],2),{previous:1,next:3,total:3});
+assert.deepEqual(nav.state([{index:1},{index:2},{index:3}],3),{previous:2,next:null,total:3});
+assert.deepEqual(nav.state([],1),{previous:null,next:null,total:0});
+const title={},arrow={},selected=[],toggled=[];
+nav.bindHeader(title,arrow,2,index=>selected.push(index),index=>toggled.push(index));
+title.onclick();assert.deepEqual(selected,[2]);assert.deepEqual(toggled,[]);
+let stopped=false;arrow.onclick({stopPropagation(){stopped=true;}});
+assert.equal(stopped,true);assert.deepEqual(selected,[2]);assert.deepEqual(toggled,[2]);
+title.onkeydown({target:title,key:'Enter',preventDefault(){}});assert.deepEqual(selected,[2,2]);
+title.onkeydown({target:arrow,key:'Enter',preventDefault(){}});assert.deepEqual(selected,[2,2]);
+stopped=false;arrow.onkeydown({stopPropagation(){stopped=true;}});assert.equal(stopped,true);
+console.log('Plate navigation: title selects only, arrow folds only, keyboard isolation and boundaries passed');

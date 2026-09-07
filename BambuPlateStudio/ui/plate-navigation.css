@@ -1,0 +1,10 @@
+.plate-navigation{display:flex;align-items:center;gap:7px;padding:9px 12px;background:#e9f5f0;border-bottom:1px solid #cbded5;flex-wrap:wrap}
+.plate-navigation[hidden]{display:none}
+.plate-navigation label{margin:0;white-space:nowrap;font-weight:600}
+.plate-navigation select{width:auto;flex:1;min-width:125px;max-width:260px;margin:0;background:#fff}
+.plate-navigation button{padding:7px 10px}
+.plate-navigation .plate-total{font-size:11px;color:#5a7870;white-space:nowrap}
+.plate-title .plate-toggle{width:27px;min-width:27px;height:27px;padding:0;border:1px solid transparent;background:transparent;display:grid;place-items:center;font-size:15px}
+.plate-title .plate-toggle:hover{background:#fff;border-color:#94bcae}
+.plate-title{padding-top:5px;padding-bottom:5px}
+.plate-title:focus-visible,.plate-toggle:focus-visible{outline:2px solid #087d72;outline-offset:1px}

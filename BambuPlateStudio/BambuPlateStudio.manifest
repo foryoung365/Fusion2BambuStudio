@@ -1,0 +1,9 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "author": "Local workspace",
+  "description": {"": "Bambu 多盘导出：打印组、贴板面、颜色与排盘预览"},
+  "version": "0.1.6",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac"
+}
