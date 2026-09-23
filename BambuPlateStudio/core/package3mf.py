@@ -68,7 +68,7 @@ def write_project(path, session, catalog, allow_unarranged=False):
         settings['enable_prime_tower'] = '0'
 
     model = ET.Element('model', {'xmlns': CORE, 'unit': 'millimeter', 'xml:lang': 'zh-CN'})
-    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.10'
+    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.11'
     ET.SubElement(model, 'metadata', name='BambuStudio:3mfVersion').text = '1'
     resources, build = ET.SubElement(model, 'resources'), ET.SubElement(model, 'build')
     model_config = ET.Element('config')

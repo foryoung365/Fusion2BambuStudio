@@ -304,13 +304,13 @@ class Controller:
             current[uid].face_colors != body.face_colors for uid, body in self.session.bodies.items()):
             raise ValueError('源模型或颜色已改变，请重新读取并排盘后导出。')
 
-    def export_to(self, path):
+    def export_to(self, path, overwrite=False):
         self.assert_source_current()
         self.update_bed()
         with tempfile.TemporaryDirectory(prefix='BambuPlateStudio_seed_') as temporary:
             seed=Path(temporary)/'seed.3mf'
             write_project(seed, self.session, self.catalog)
-            self.last_export=export_native(seed,path,self.catalog,self.exe)
+            self.last_export=export_native(seed,path,self.catalog,self.exe,overwrite=overwrite)
         return self.last_export
 
     def dispatch(self, action, data):
@@ -552,7 +552,17 @@ class Controller:
                 dialog.filter = '3MF Project (*.3mf)'
                 dialog.initialFilename = 'BambuPlateStudio.3mf'
                 if dialog.showSave() == adsk.core.DialogResults.DialogOK:
-                    self.export_to(dialog.filename)
+                    target=Path(dialog.filename)
+                    overwrite=target.exists()
+                    if overwrite:
+                        answer=self.app.userInterface.messageBox(
+                            f'文件已存在：\n{target}\n\n确认覆盖吗？旧文件会在新 3MF 完成并通过校验后才被替换。',
+                            '确认覆盖 3MF',adsk.core.MessageBoxButtonTypes.YesNoButtonType,
+                            adsk.core.MessageBoxIconTypes.QuestionIconType)
+                        if answer != adsk.core.DialogResults.DialogYes:
+                            self.notices=['已取消覆盖，原文件未改变。']
+                            return self.state()
+                    self.export_to(dialog.filename,overwrite=overwrite)
             else:
                 raise ValueError('未知操作：'+action)
         return self.state()

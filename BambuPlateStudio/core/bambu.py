@@ -57,21 +57,41 @@ def run_project(seed, job, catalog, executable, orient=False, arrange=False, tim
     return native,time.monotonic()-started
 
 
-def export_native(seed, destination, catalog, executable, timeout=60):
+def export_native(seed, destination, catalog, executable, timeout=60, overwrite=False):
     seed,destination=Path(seed),Path(destination)
     if destination.suffix.lower() != '.3mf':
         raise ValueError('输出文件必须使用 .3mf 扩展名。')
-    if destination.exists():
+    if destination.exists() and not overwrite:
         raise FileExistsError('输出文件已存在，请选择新文件名。')
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        raise ValueError('目标路径不是普通文件，不能覆盖。')
+    original=destination.stat() if destination.exists() else None
     with zipfile.ZipFile(seed) as archive:
         manifest=json.loads(archive.read('Metadata/BambuPlateStudio.json'))
     destination.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='BambuPlateStudio_') as temporary:
         native,elapsed=run_project(seed,temporary,catalog,executable,timeout=timeout)
         fidelity=verify(seed,native)
-        with destination.open('xb') as out,native.open('rb') as source:
-            shutil.copyfileobj(source,out)
-        return {'path':str(destination.resolve()),'sha256':hashlib.sha256(destination.read_bytes()).hexdigest(),
+        if overwrite:
+            staged=None
+            try:
+                with tempfile.NamedTemporaryFile(dir=destination.parent,prefix=destination.name+'.',suffix='.tmp',delete=False) as out,native.open('rb') as source:
+                    staged=Path(out.name)
+                    shutil.copyfileobj(source,out)
+                    out.flush();os.fsync(out.fileno())
+                checksum=hashlib.sha256(staged.read_bytes()).hexdigest()
+                if original:
+                    current=destination.stat()
+                    if (current.st_ino,current.st_size,current.st_mtime_ns)!=(original.st_ino,original.st_size,original.st_mtime_ns):
+                        raise RuntimeError('目标文件在导出期间发生变化，未覆盖；请重新选择。')
+                os.replace(staged,destination)
+            finally:
+                if staged and staged.exists():staged.unlink()
+        else:
+            with destination.open('xb') as out,native.open('rb') as source:
+                shutil.copyfileobj(source,out)
+            checksum=hashlib.sha256(destination.read_bytes()).hexdigest()
+        return {'path':str(destination.resolve()),'sha256':checksum,
                 'nativeBambuReadWritePassed':True,'sliced':False,'bodies':fidelity['bodies'],
                 'objects':fidelity['objects'],'plates':fidelity['plates'],
                 'maxVertexErrorMm':fidelity['maxVertexErrorMm'],
