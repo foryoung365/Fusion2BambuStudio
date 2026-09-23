@@ -4,6 +4,7 @@
 .plate-navigation select{width:auto;flex:1;min-width:125px;max-width:260px;margin:0;background:#fff}
 .plate-navigation button{padding:7px 10px}
 .plate-navigation .plate-total{font-size:11px;color:#5a7870;white-space:nowrap}
+.plate-navigation .plate-actions{display:flex;gap:7px;margin-left:auto}
 .plate-title .plate-toggle{width:27px;min-width:27px;height:27px;padding:0;border:1px solid transparent;background:transparent;display:grid;place-items:center;font-size:15px}
 .plate-title .plate-toggle:hover{background:#fff;border-color:#94bcae}
 .plate-title{padding-top:5px;padding-bottom:5px}

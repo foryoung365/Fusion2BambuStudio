@@ -53,6 +53,9 @@ def main():
         single_material_plates &= len(used) <= 1
     if single_material_plates:
         process['enable_prime_tower'] = '0'
+    else:
+        command[command.index('--allow-multicolor-oneplate=0')]='--allow-multicolor-oneplate=1'
+        process['enable_prime_tower']=settings.get('enable_prime_tower','1')
     for filename, data in [('machine.json', machine), ('process.json', process)]:
         (output/filename).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     filaments = []

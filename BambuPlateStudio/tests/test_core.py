@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from BambuPlateStudio.core.geometry import face_down, rotate, dot, cross, transform_point
-from BambuPlateStudio.core.model import Body, Session, Placement, PrintUnit
+from BambuPlateStudio.core.model import Body, Session, Placement, Plate, PrintUnit
 from BambuPlateStudio.core.layout import Bed, arrange, validate, process_clearance
 from BambuPlateStudio.core.package3mf import write_project, inspect_project, CORE
 from BambuPlateStudio.core.profiles import ProfileCatalog, discover, project_settings
@@ -113,6 +113,23 @@ class GeometryTests(unittest.TestCase):
             self.assertGreaterEqual(placement.y,10.1-1e-7)
         self.assertFalse(validate(session,Bed(256,256,256))[0])
 
+    def test_auto_brim_is_warning_not_false_collision(self):
+        session=Session([cube('a',size=(53.37,36.47,10)),cube('b',size=(40.31,11.82,10))])
+        session.config['autoBrimReserve']=5.1
+        session.plates=[Plate(1,'test')]
+        session.placements={'a':Placement('a',1,10.1,10.1),
+                            'b':Placement('b',1,10.1,58.2912)}
+        errors,warnings=validate(session,Bed(256,256,256))
+        self.assertEqual(errors,[])
+        self.assertTrue(any('自动裙边' in warning for warning in warnings))
+
+    def test_actual_bed_exit_is_distinguished_from_margin(self):
+        session=Session([cube()]);session.plates=[Plate(1,'test')]
+        session.placements={'a':Placement('a',1,-0.1,10)}
+        self.assertTrue(any('实际范围' in error for error in validate(session,Bed(256,256,256))[0]))
+        session.placements['a'].x=2
+        self.assertTrue(any('板边距' in error for error in validate(session,Bed(256,256,256))[0]))
+
     def test_lost_face_reference_blocks_arrangement(self):
         session=Session([cube()]);session.units['a'].orientation_valid=False
         with self.assertRaisesRegex(ValueError,'引用已失效'):arrange(session,Bed(256,256,256))
@@ -167,7 +184,7 @@ class InstalledProfilesTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_project(path, session, self.catalog)
 
-    def test_old_zero_clearance_rules_cannot_bypass_export_guard(self):
+    def test_auto_brim_inside_bed_is_warning_not_export_blocker(self):
         session=Session([cube()])
         arrange(session,Bed.from_profile(self.catalog.resolve('machine',session.config['printer'])))
         # Reproduce the legacy corner layout; centered positions may already be safe.
@@ -175,12 +192,27 @@ class InstalledProfilesTests(unittest.TestCase):
         original=copy.deepcopy(session.placements)
         self.assertEqual(session.config['printClearance'],0)
         with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/'stale.3mf'
-            with self.assertRaisesRegex(ValueError,'超出打印范围'):
-                write_project(path,session,self.catalog)
-            self.assertFalse(path.exists())
+            path=Path(directory)/'auto_brim.3mf'
+            report=write_project(path,session,self.catalog)
+            self.assertTrue(path.exists())
+            self.assertTrue(any('自动裙边' in warning for warning in report['warnings']))
         self.assertEqual(session.placements,original)
-        self.assertGreater(session.config['printClearance'],0)
+        self.assertEqual(session.config['printClearance'],0)
+        self.assertGreater(session.config['autoBrimReserve'],0)
+
+    def test_arrangement_scratch_seed_only_waives_xy_errors(self):
+        session=Session([cube('a'),cube('b')]);session.plates=[Plate(1,'test')]
+        session.placements={'a':Placement('a',1,10,10),'b':Placement('b',1,15,15)}
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)
+            with self.assertRaisesRegex(ValueError,'间距'):
+                write_project(output/'final.3mf',session,self.catalog)
+            self.assertFalse((output/'final.3mf').exists())
+            write_project(output/'scratch.3mf',session,self.catalog,allow_unarranged=True)
+            self.assertTrue((output/'scratch.3mf').exists())
+            session.color_overrides['b']='#FF0000'
+            with self.assertRaisesRegex(ValueError,'不同颜色'):
+                write_project(output/'mixed.3mf',session,self.catalog,allow_unarranged=True)
 
     def test_native_export_rejects_non_3mf_filename_before_launch(self):
         from BambuPlateStudio.core.bambu import export_native

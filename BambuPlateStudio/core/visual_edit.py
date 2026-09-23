@@ -15,7 +15,7 @@ def merge_onto(session, source_id, target_id):
     # Target orientation wins; all geometry remains in original assembly coordinates.
     group = PrintUnit(target.uid, target.name if len(target.members)>1 else target.name+' · 整体',
                       members, target.rotation, target.face_token, target.orientation_label,
-                      target.orientation_valid)
+                      target.orientation_valid,target.orientation_locked or source.orientation_locked)
     session.units[target_id] = group
     del session.units[source_id]
     session.placements.pop(source_id, None)

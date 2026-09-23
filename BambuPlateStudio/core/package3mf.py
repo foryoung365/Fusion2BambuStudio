@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from .geometry import encode_3mf, bounds, transform_point
-from .layout import Bed, validate, scene_origin, process_clearance
+from .layout import Bed, validate, scene_origin, process_clearance, auto_brim_reserve
 from .profiles import project_settings
 
 CORE = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'
@@ -37,7 +37,7 @@ def slots_for(session):
     return slots, body_slots
 
 
-def write_project(path, session, catalog):
+def write_project(path, session, catalog, allow_unarranged=False):
     path = Path(path).resolve()
     if path.suffix.lower() != '.3mf':
         raise ValueError('输出文件必须使用 .3mf 扩展名。')
@@ -46,12 +46,18 @@ def write_project(path, session, catalog):
     slots, body_slots = slots_for(session)
     settings = project_settings(catalog, session.config, slots)
     # Seed export must also protect direct callers restoring an old zero-clearance layout.
-    session.config['printClearance'] = process_clearance(
-        catalog.resolve('process', session.config['process']), session.config['enableSupport'])
+    process=catalog.resolve('process', session.config['process'])
+    session.config['printClearance'] = process_clearance(process, session.config['enableSupport'])
+    session.config['autoBrimReserve'] = auto_brim_reserve(process)
     bed = Bed.from_profile(catalog.resolve('machine', session.config['printer']))
     errors, warnings = validate(session, bed)
-    if errors:
-        raise ValueError('\n'.join(errors))
+    # A scratch input for Bambu --arrange may start with bad XY positions;
+    # final exports still enforce every validation error.
+    xy_errors=('超出打印板实际范围：','未满足设置的板边距或明确启用的裙边预留：',
+               '进入打印板禁用区：','包围矩形未满足设置的实体间距：')
+    blocking=[error for error in errors if not (allow_unarranged and error.startswith(xy_errors))]
+    if blocking:
+        raise ValueError('\n'.join(blocking))
     if not session.plates:
         raise ValueError('没有已排布的打印盘。')
     plate_slots = {p.index: set() for p in session.plates}
@@ -62,7 +68,7 @@ def write_project(path, session, catalog):
         settings['enable_prime_tower'] = '0'
 
     model = ET.Element('model', {'xmlns': CORE, 'unit': 'millimeter', 'xml:lang': 'zh-CN'})
-    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.0'
+    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.10'
     ET.SubElement(model, 'metadata', name='BambuStudio:3mfVersion').text = '1'
     resources, build = ET.SubElement(model, 'resources'), ET.SubElement(model, 'build')
     model_config = ET.Element('config')

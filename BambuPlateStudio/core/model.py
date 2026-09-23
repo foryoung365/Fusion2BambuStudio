@@ -54,6 +54,7 @@ class PrintUnit:
     face_token: str = ''
     orientation_label: str = '保持原方向'
     orientation_valid: bool = True
+    orientation_locked: bool = False
 
     def geometry(self, bodies, z_angle=0.):
         validate_rotation(self.rotation)
@@ -132,7 +133,8 @@ class Session:
         if any(u.rotation != IDENTITY for u in selected):
             raise ValueError('请先将所选单元恢复原方向，再按原装配关系组合。')
         group = PrintUnit(new_id(), name.strip() or '整体打印组',
-                          [uid for u in selected for uid in u.members])
+                          [uid for u in selected for uid in u.members],
+                          orientation_locked=any(u.orientation_locked for u in selected))
         for u in selected:
             del self.units[u.uid]
         self.units[group.uid] = group
@@ -150,7 +152,7 @@ class Session:
             body = self.bodies[member]
             child = PrintUnit(member, body.name, [member], unit.rotation,
                               orientation_label='继承已解除整体的方向',
-                              orientation_valid=unit.orientation_valid)
+                              orientation_valid=unit.orientation_valid,orientation_locked=unit.orientation_locked)
             released[member] = child
             if placement:
                 child_box=child.geometry(self.bodies,placement.angle)[1]
@@ -204,7 +206,9 @@ class Session:
             kept[data['uid']] = PrintUnit(data['uid'], data['name'], members,
                                          tuple(tuple(r) for r in data['rotation']),
                                          data.get('face_token', ''), data.get('orientation_label', ''),
-                                         data.get('orientation_valid',True))
+                                         data.get('orientation_valid',True),
+                                         data.get('orientation_locked',bool(data.get('face_token')) or
+                                                  data.get('orientation_label','保持原方向') not in ('','保持原方向')))
             claimed.update(members)
         for uid, body in self.bodies.items():
             if uid not in claimed:

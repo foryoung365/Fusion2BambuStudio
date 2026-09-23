@@ -7,13 +7,15 @@ from pathlib import Path
 import adsk.core
 import adsk.fusion
 from ..core.geometry import IDENTITY, multiply, rotate, face_down, axis_rotation, cross, unit, dot
-from ..core.model import Body, Session, Plate
-from ..core.layout import Bed, arrange, validate, footprint, process_clearance
+from ..core.model import Body, Session, Plate, new_id
+from ..core.layout import Bed, arrange, validate, footprint, process_clearance, auto_brim_reserve
 from ..core.profiles import ProfileCatalog, discover, profile_roots_for, BEDS
 from ..core.package3mf import write_project
 from ..core.bambu import export_native
 from ..core.inputs import config_change, placement_change, color_hex
 from ..core.visual_edit import EditHistory, merge_onto, transfer_to_plate, check_mixed_transfer, approve_plate
+from ..core.auto_orient import suggest, suggest_many, apply_rotation
+from ..core.auto_place import suggest as suggest_positions, apply_positions
 
 ATTRIBUTE_GROUP = 'BambuPlateStudio'
 ATTRIBUTE_NAME = 'printingRules.v1'
@@ -173,6 +175,10 @@ class Controller:
         self.preview_group = None
         self.history = EditHistory()
         self.geometry_revision = 0
+        self.orientation_preview = None
+        self.orientation_snapshot = None
+        self.arrangement_preview = None
+        self.arrangement_snapshot = None
 
     def clear_preview(self):
         if self.preview_group and self.preview_group.isValid:
@@ -191,6 +197,10 @@ class Controller:
         if not self.app.activeDocument:
             raise ValueError('请先打开需要导出的 Fusion 设计。')
         self.clear_preview()
+        self.orientation_preview = None
+        self.orientation_snapshot = None
+        self.arrangement_preview = None
+        self.arrangement_snapshot = None
         config = dict(self.session.config)
         memory_rules = (self.session.rules() if self.source and self.source.document == self.app.activeDocument
                         and self.session.bodies and not self.session.rule_errors else None)
@@ -250,6 +260,7 @@ class Controller:
         process = self.catalog.resolve('process', self.session.config['process'])
         # Stored rules from older versions are not authoritative for process space.
         self.session.config['printClearance'] = process_clearance(process, self.session.config['enableSupport'])
+        self.session.config['autoBrimReserve'] = auto_brim_reserve(process)
 
     def state(self, include_profiles=False):
         units = []
@@ -263,6 +274,7 @@ class Controller:
                         'issues': self.session.bodies[uid].issues} for uid in unit.members]
             units.append({'uid': unit.uid, 'name': unit.name, 'members': members, 'size': size,
                           'rotation':unit.rotation,
+                          'orientationLocked':unit.orientation_locked,
                           'direction': unit.orientation_label,
                           'placement': asdict(placement) if placement else None,
                           'rect': footprint(self.session, placement) if placement else None})
@@ -275,14 +287,14 @@ class Controller:
                   'warnings': warnings, 'notices': self.notices, 'lastExport': self.last_export,
                   'colorProfiles': self.session.color_profiles, 'exe': self.exe}
         result.update(geometryRevision=self.geometry_revision,canUndo=bool(self.history.undo_stack),
-                      canRedo=bool(self.history.redo_stack))
+                      canRedo=bool(self.history.redo_stack),orientationPreview=self.orientation_preview,
+                      arrangementPreview=self.arrangement_preview)
         if include_profiles:
             result['profiles'] = self.profile_state()
         return result
 
-    def export_to(self, path):
+    def assert_source_current(self):
         self.assert_document()
-        self.update_bed()
         # Refuse stale geometry or colors; do not export an out-of-date captured model.
         fresh_source = FusionSource(self.app.activeDocument)
         fresh = fresh_source.scan(self.session.config['includeHidden'], self.session.config['refinement'])
@@ -291,6 +303,10 @@ class Controller:
             current[uid].geometry_key() != body.geometry_key() or current[uid].color != body.color or
             current[uid].face_colors != body.face_colors for uid, body in self.session.bodies.items()):
             raise ValueError('源模型或颜色已改变，请重新读取并排盘后导出。')
+
+    def export_to(self, path):
+        self.assert_source_current()
+        self.update_bed()
         with tempfile.TemporaryDirectory(prefix='BambuPlateStudio_seed_') as temporary:
             seed=Path(temporary)/'seed.3mf'
             write_project(seed, self.session, self.catalog)
@@ -303,9 +319,12 @@ class Controller:
             self.assert_document()
             self.history.restore(self.session,action=='undo')
             self.update_bed();self.last_export=None;self.notices=[]
+            self.orientation_preview=None;self.orientation_snapshot=None
+            self.arrangement_preview=None;self.arrangement_snapshot=None
             return self.state(True)
         edits={'group','ungroup','group_drop','rename_unit','direction','viewer_face','body_color','color_profile',
-               'arrange','move','transfer_plate','add_plate','delete_plate','config','reset_units'}
+               'arrange','move','transfer_plate','add_plate','delete_plate','config','reset_units',
+               'orientation_lock','orientation_apply','arrangement_apply'}
         before=self.history.snapshot(self.session) if action in edits and self.session.bodies else None
         previous_bed=self.bed
         try:
@@ -317,7 +336,10 @@ class Controller:
             raise
         if before is not None:
             self.history.commit(before,self.session);self.last_export=None
-            result.update(canUndo=bool(self.history.undo_stack),canRedo=bool(self.history.redo_stack),lastExport=None)
+            self.orientation_preview=None;self.orientation_snapshot=None
+            self.arrangement_preview=None;self.arrangement_snapshot=None
+            result.update(canUndo=bool(self.history.undo_stack),canRedo=bool(self.history.redo_stack),
+                          lastExport=None,orientationPreview=None,arrangementPreview=None)
         return result
 
     def _dispatch(self, action, data):
@@ -332,6 +354,8 @@ class Controller:
             catalog=ProfileCatalog(roots)
             self.exe,self.catalog=str(exe),catalog
             self.history.clear();self.last_export=None
+            self.orientation_preview=None;self.orientation_snapshot=None
+            self.arrangement_preview=None;self.arrangement_snapshot=None
             self.session.invalidate_layout()
             self.notices=['已切换本次会话使用的 Bambu 安装位置，请重新核对预设。']
             return self.state(True)
@@ -354,10 +378,82 @@ class Controller:
             existing=sorted({str(p.path.parent.parent) for p in self.catalog.records.values()}) if self.catalog else []
             self.catalog = ProfileCatalog(existing+[data['path']])
             self.history.clear();self.last_export=None
+            self.orientation_preview=None;self.orientation_snapshot=None
+            self.arrangement_preview=None;self.arrangement_snapshot=None
             return self.state(True)
         else:
             self.assert_document()
-            if action == 'group':
+            if action == 'orientation_preview':
+                self.orientation_preview=None;self.orientation_snapshot=None
+                self.arrangement_preview=None;self.arrangement_snapshot=None
+                self.assert_source_current()
+                scope=data.get('scope','unit')
+                if scope=='unit':
+                    proposal=suggest(self.session,data['unit'],self.catalog,self.exe)
+                elif scope in ('current','all'):
+                    if scope=='current':
+                        number=data.get('plate')
+                        if type(number) is not int or not any(p.index==number for p in self.session.plates):
+                            raise ValueError('请选择有效的当前打印盘。')
+                        plates=[number]
+                    else:plates=[p.index for p in self.session.plates if any(x.plate==p.index for x in self.session.placements.values())]
+                    selected=[uid for uid in self.session.units if uid in self.session.placements and
+                              self.session.placements[uid].plate in plates]
+                    proposal=suggest_many(self.session,selected,plates,self.catalog,self.exe)
+                    proposal['scope']=scope
+                else:raise ValueError('请选择所选件、当前盘或所有盘。')
+                proposal['token']=new_id()
+                self.orientation_preview=proposal
+                self.orientation_snapshot=self.history.snapshot(self.session)
+                self.notices=['朝向建议已生成，尚未修改任何打印单元。请预览后确认。']
+            elif action == 'orientation_cancel':
+                if self.orientation_preview and data.get('token')==self.orientation_preview['token']:
+                    self.orientation_preview=None;self.orientation_snapshot=None
+                self.notices=['已取消朝向建议，原方向和盘位未改变。']
+            elif action == 'orientation_apply':
+                preview=self.orientation_preview
+                if not preview or data.get('token')!=preview['token'] or self.session.rules()!=self.orientation_snapshot:
+                    raise ValueError('朝向建议已过期，请重新生成；未修改模型。')
+                self.assert_source_current()
+                if preview.get('batch'):
+                    if not preview['units']:raise ValueError('没有需要改变的朝向，未应用。')
+                    for uid,proposal in preview['units'].items():apply_rotation(self.session,uid,proposal['rotation'])
+                    self.notices=[f"已一次应用 {len(preview['units'])} 个打印单元的推荐朝向；盘号和整体不变。请检查占地并按需自动摆位，可撤销。"]
+                else:
+                    apply_rotation(self.session,preview['unit'],preview['rotation'])
+                    self.notices=['已应用 Bambu 推荐朝向，仅改变所选打印单元。请检查占地与支撑；如有冲突，可手动移位或重新排盘。可撤销。']
+            elif action == 'orientation_lock':
+                if type(data['locked']) is not bool:raise ValueError('锁定状态必须是开关值。')
+                self.session.units[data['unit']].orientation_locked=data['locked']
+            elif action == 'arrangement_preview':
+                self.orientation_preview=None;self.orientation_snapshot=None
+                self.arrangement_preview=None;self.arrangement_snapshot=None
+                self.assert_source_current()
+                scope=data.get('scope')
+                if scope=='current':
+                    number=data.get('plate')
+                    if type(number) is not int:raise ValueError('请选择有效的当前打印盘。')
+                    numbers=[number]
+                elif scope=='all':
+                    numbers=[p.index for p in self.session.plates if any(x.plate==p.index for x in self.session.placements.values())]
+                else:raise ValueError('请选择当前盘或所有盘。')
+                proposal=suggest_positions(self.session,numbers,self.catalog,self.exe)
+                proposal['token']=new_id();proposal['scope']=scope
+                self.arrangement_preview=proposal
+                self.arrangement_snapshot=self.history.snapshot(self.session)
+                self.notices=['Bambu 摆位建议已生成，尚未修改盘位。请预览后确认。']
+            elif action == 'arrangement_cancel':
+                if self.arrangement_preview and data.get('token')==self.arrangement_preview['token']:
+                    self.arrangement_preview=None;self.arrangement_snapshot=None
+                self.notices=['已取消摆位建议，原盘位未改变。']
+            elif action == 'arrangement_apply':
+                proposal=self.arrangement_preview
+                if not proposal or data.get('token')!=proposal['token'] or self.session.rules()!=self.arrangement_snapshot:
+                    raise ValueError('摆位建议已过期，请重新生成；未修改盘位。')
+                self.assert_source_current()
+                apply_positions(self.session,proposal)
+                self.notices=['已应用 Bambu 摆位建议，仅调整所选打印盘内的 X/Y 位置；可撤销。']
+            elif action == 'group':
                 self.session.group(data['units'], data.get('name', '整体打印组'))
             elif action == 'group_drop':
                 group=merge_onto(self.session,data['source'],data['target'])
@@ -379,6 +475,7 @@ class Controller:
                 selected.rotation=face_down(normal)
                 selected.face_token=face.entityToken;selected.orientation_label='视图中所选平面朝下'
                 selected.orientation_valid=True
+                selected.orientation_locked=True
                 if selected.uid in self.session.placements:self.session.placements[selected.uid].z=0.
                 self.notices=['已按所选平面贴板。请检查新的占地；可撤销。']
             elif action == 'ungroup':
@@ -396,6 +493,7 @@ class Controller:
                 unit.orientation_label = '保持原方向' if mode == 'original' else mode+' 面朝下'
                 unit.face_token = ''
                 unit.orientation_valid=True
+                unit.orientation_locked=True
                 self.session.invalidate_layout()
             elif action == 'pick_face':
                 if not self.choose_face:

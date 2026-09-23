@@ -71,6 +71,8 @@ class FaceExecute(adsk.core.CommandEventHandler):
             unit.rotation = face_down(normal)
             unit.face_token, unit.orientation_label = face.entityToken, '所选平面朝下'
             unit.orientation_valid = True
+            unit.orientation_locked = True
+            controller.orientation_preview=None;controller.orientation_snapshot=None
             controller.session.invalidate_layout()
             emit_state()
         except Exception as exc:
@@ -111,7 +113,7 @@ def show_palette():
     palette = ui.palettes.itemById(PALETTE)
     if not palette:
         url = (Path(__file__).parent / 'ui' / 'index.html').resolve().as_uri()
-        palette = ui.palettes.add(PALETTE, 'Bambu 可视化打印准备', url, True, True, True, 1460, 920, True)
+        palette = ui.palettes.add(PALETTE, 'MF3D打印摆盘助手', url, True, True, True, 1460, 920, True)
         palette.dockingOption = adsk.core.PaletteDockingOptions.PaletteDockOptionsNone
         palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
         palette.setMinimumSize(1020,680)
@@ -154,8 +156,8 @@ def run(context):
     if controller is None:
         controller = Controller()
     controller.choose_face = choose_face
-    for uid, title, handler in ((COMMAND, 'Bambu 可视化打印准备', ShowCreated()),
-                                (NATIVE_COMMAND, 'Bambu 原生兼容界面', NativeCreated()),
+    for uid, title, handler in ((COMMAND, 'MF3D打印摆盘助手', ShowCreated()),
+                                (NATIVE_COMMAND, 'MF3D打印摆盘助手（兼容界面）', NativeCreated()),
                                 (FACE_COMMAND, '指定贴板平面', FaceCreated())):
         definition = ui.commandDefinitions.itemById(uid)
         if not definition:

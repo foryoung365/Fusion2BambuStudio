@@ -1,0 +1,17 @@
+.orientation-dialog{width:min(1120px,95vw);max-height:90vh;overflow:auto;border:0;padding:20px;border-radius:12px;color:#263c41}
+.orientation-dialog::backdrop{background:#183b4566}
+#orientationPlatePicker[hidden]{display:none}
+.orientation-comparison{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin:16px 0}
+.orientation-comparison h3{margin:0 0 5px}
+.orientation-canvas{height:350px;position:relative;border:1px solid #cbded5;border-radius:8px;overflow:hidden;background:#eaf2f2}
+.orientation-canvas canvas{display:block;width:100%;height:100%;touch-action:none}
+.orientation-dialog.batch .orientation-canvas{height:290px}
+.orientation-labels{position:absolute;inset:0;pointer-events:none}
+.orientation-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
+.orientation-dialog .orientation-actions{position:sticky;bottom:0;background:#fff;padding:10px 0 0}
+.arrange-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;padding:0 12px 12px}
+.arrange-tools button{padding:7px 4px;font-size:11px}
+#arrangementStatus{white-space:pre-line}
+#arrangementStatus.invalid{background:#fff0ed;color:#a83728}
+#orientationStatus{white-space:pre-line;max-height:96px;overflow:auto}
+#orientationStatus.invalid{background:#fff0ed;color:#a83728}

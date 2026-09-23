@@ -2,6 +2,7 @@
 import itertools
 import json
 import math
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -26,10 +27,17 @@ def mul(a,b):
 
 
 
-def read(path):
+def read(path, orientation=False):
     with zipfile.ZipFile(path) as z:
         models={n:ET.fromstring(z.read(n)) for n in z.namelist() if n.endswith('.model')}
-        config=ET.fromstring(z.read('Metadata/model_settings.config'))
+        config_xml=z.read('Metadata/model_settings.config')
+        if orientation:
+            # Bambu 2.8.2 writes unescaped string-vector descriptors during
+            # --orient. Ignore ONLY these two unused descriptors when extracting
+            # rotations; never repair geometry or use this file as final output.
+            config_xml=re.sub(rb'^[ \t]*<metadata key="(?:compatible_printers|print_extruder_variant)" value=.*?/>\r?\n',
+                              b'',config_xml,flags=re.MULTILINE)
+        config=ET.fromstring(config_xml)
         settings=json.loads(z.read('Metadata/project_settings.config'))
     resources={(name,o.get('id')):o for name,m in models.items() for o in m.findall('c:resources/c:object',NS)}
     configs={o.get('id'):o for o in config.findall('object')}
@@ -58,6 +66,7 @@ def read(path):
                         'name':info.get('name'),'unitName':metadata(obj).get('name'),
                         'color':settings['filament_colour'][slot],
                         'material':settings['filament_type'][slot]}
+            if orientation:parts[key]['matrix']=matrix
         groups.append(sorted(members))
     return parts,sorted(groups),len(config.findall('plate')),settings
 

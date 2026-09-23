@@ -46,12 +46,22 @@ def process_clearance(process, supports):
         return float(value)
     brim_type=process.get('brim_type','auto_brim')
     if isinstance(brim_type,list):brim_type=brim_type[0]
-    brim=0. if brim_type in ('no_brim','none') else number('brim_width')+number('brim_object_gap')
+    brim=0. if brim_type in ('auto_brim','no_brim','none',None) else number('brim_width')+number('brim_object_gap')
     support=0.
     if supports:
         support=max(number('support_object_xy_distance'),number('tree_support_branch_diameter')/2,
                     number('tree_support_tip_diameter')/2)
     return max(0.,brim,support)
+
+
+def auto_brim_reserve(process):
+    brim_type=process.get('brim_type','auto_brim')
+    if isinstance(brim_type,list):brim_type=brim_type[0] if brim_type else 'auto_brim'
+    if brim_type not in ('auto_brim',None):return 0.
+    def number(key):
+        value=process.get(key,0.)
+        return float(value[0] if isinstance(value,list) and value else value)
+    return max(0.,number('brim_width')+number('brim_object_gap'))
 
 
 def spacing(session):
@@ -79,6 +89,8 @@ def validate(session, bed):
     if sorted(grouped) != sorted(session.bodies):
         errors.append('打印组未完整且唯一地覆盖全部实体。')
     by_plate = {}
+    auto_brim_edges=auto_brim_pairs=0
+    auto_brim=float(session.config.get('autoBrimReserve',0.))
     for placement in session.placements.values():
         if placement.unit not in session.units or placement.plate not in indices:
             errors.append('盘位引用无效。')
@@ -91,16 +103,29 @@ def validate(session, bed):
             errors.append('贴板面引用已失效，请重新指定：'+unit.name)
         rotation, box, size = unit.geometry(session.bodies, placement.angle)
         rect = footprint(session, placement)
-        if (rect[0] < bed.origin_x+margin-1e-6 or rect[1] < bed.origin_y+margin-1e-6 or
+        if (rect[0] < bed.origin_x-1e-6 or rect[1] < bed.origin_y-1e-6 or
+            rect[0]+rect[2] > bed.origin_x+bed.width+1e-6 or
+            rect[1]+rect[3] > bed.origin_y+bed.depth+1e-6):
+            errors.append('超出打印板实际范围：'+unit.name)
+        elif (rect[0] < bed.origin_x+margin-1e-6 or rect[1] < bed.origin_y+margin-1e-6 or
             rect[0]+rect[2] > bed.origin_x+bed.width-margin+1e-6 or
-            rect[1]+rect[3] > bed.origin_y+bed.depth-margin+1e-6 or size[2]+placement.z > bed.height+1e-6 or placement.z < -1e-6):
-            errors.append('超出打印范围：'+unit.name)
+            rect[1]+rect[3] > bed.origin_y+bed.depth-margin+1e-6):
+            errors.append('未满足设置的板边距或明确启用的裙边预留：'+unit.name)
+        if size[2]+placement.z > bed.height+1e-6 or placement.z < -1e-6:
+            errors.append('超出打印高度：'+unit.name)
+        if auto_brim and (rect[0] < bed.origin_x+margin+auto_brim-1e-6 or
+            rect[1] < bed.origin_y+margin+auto_brim-1e-6 or
+            rect[0]+rect[2] > bed.origin_x+bed.width-margin-auto_brim+1e-6 or
+            rect[1]+rect[3] > bed.origin_y+bed.depth-margin-auto_brim+1e-6):
+            auto_brim_edges+=1
         if any(rectangle_overlap(rect, exclusion, gap) for exclusion in bed.exclusions):
             errors.append('进入打印板禁用区：'+unit.name)
         peers = by_plate.setdefault(placement.plate, [])
         for other in peers:
             if rectangle_overlap(rect, footprint(session, other), gap):
-                errors.append('间距不足或包围盒相交：'+unit.name+' / '+session.units[other.unit].name)
+                errors.append('包围矩形未满足设置的实体间距：'+unit.name+' / '+session.units[other.unit].name)
+            elif auto_brim and rectangle_overlap(rect,footprint(session,other),gap+2*auto_brim):
+                auto_brim_pairs+=1
         peers.append(placement)
         for member in unit.members:
             body = session.bodies[member]
@@ -120,6 +145,8 @@ def validate(session, bed):
             warnings.append(f'第 {number} 盘为已确认的手动混色盘，请核查换料方式与耗材兼容性。')
         if any(len(key) > 1 for key in keys):
             warnings.append(f'第 {number} 盘含多色不可拆分整体，需多材料切换，不能拆到不同盘。')
+    if auto_brim_edges or auto_brim_pairs:
+        warnings.append(f'自动裙边若实际生成，{auto_brim_edges} 件模型靠近预留边界、{auto_brim_pairs} 对模型可能需要额外空间；这不是实体碰撞，请切片确认。')
     return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings))
 
 

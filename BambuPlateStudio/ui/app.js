@@ -1,12 +1,12 @@
 'use strict';
-let state={units:[],plates:[],config:{},errors:[],warnings:[]},profiles={},selected=null,currentPlate=1,mode='group',busy=false,viewer=null,loadedRevision=-1,transferConfirm=null;
+let state={units:[],plates:[],config:{},errors:[],warnings:[]},profiles={},selected=null,currentPlate=1,mode='group',busy=false,viewer=null,loadedRevision=-1,transferConfirm=null,orientationDialog=null,arrangementDialog=null;
 const $=id=>document.getElementById(id),closedPlates=new Set(),geometry=new Map(),thumbs=new Map();
 const demo=new URLSearchParams(location.search).get('demo')==='1';
 const MIME='application/x-bambu-plate-studio-unit';
 function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
 function message(text,error=false){$('message').textContent=text;$('message').className=text?(error?'error':'info'):'';}
 function hint(text){$('dragHint').textContent=text;$('dragHint').style.display=text?'block':'none';}
-function setBusy(value){busy=value;document.querySelectorAll('button').forEach(b=>b.disabled=value);if(!value){$('undo').disabled=!state.canUndo;$('redo').disabled=!state.canRedo;}syncNavigationLimits();}
+function setBusy(value){busy=value;document.querySelectorAll('button').forEach(b=>b.disabled=value);if(!value){$('undo').disabled=!state.canUndo;$('redo').disabled=!state.canRedo;}syncNavigationLimits();syncOrientationControls();syncPlacementControls();orientationDialog?.refreshButtons(value);arrangementDialog?.refreshButtons(value);}
 async function rpc(action,data={}){
  const payload={action,data};let response;
  if(demo){const r=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});response=await r.json();}
@@ -14,16 +14,21 @@ async function rpc(action,data={}){
  if(!response.ok){const error=Error(response.error);error.confirmation=response.confirmation;throw error;}return response.state;
 }
 async function request(action,data={}){
- if(busy)return;setBusy(true);
- try{const next=await rpc(action,data);if(action==='transfer_plate'){selected=data.unit;currentPlate=data.plate;closedPlates.delete(currentPlate);}update(next);if(action==='transfer_plate'){setMode('layout');renderTree();document.querySelector('.plate-title[data-plate="'+currentPlate+'"]')?.scrollIntoView({block:'nearest'});}message((next.notices||[]).join('\n'));
+  if(busy)return;setBusy(true);
+  const slow=['orientation_preview','arrangement_preview'].includes(action),started=Date.now();
+  const ticker=slow?setInterval(()=>message(`Bambu 正在计算${action==='orientation_preview'?'朝向':'摆位'}，已等待 ${Math.floor((Date.now()-started)/1000)} 秒…`),1000):null;
+  try{if(slow)await new Promise(resolve=>setTimeout(resolve,20));
+   const next=await rpc(action,data);if(action==='transfer_plate'){selected=data.unit;currentPlate=data.plate;closedPlates.delete(currentPlate);}update(next);if(action==='transfer_plate'){setMode('layout');renderTree();document.querySelector('.plate-title[data-plate="'+currentPlate+'"]')?.scrollIntoView({block:'nearest'});}message((next.notices||[]).join('\n'));
   if(next.units.length&&loadedRevision!==next.geometryRevision){hint('正在载入三维模型…');const data=await rpc('viewport_data');geometry.clear();for(const b of data.bodies)geometry.set(b.uid,b);loadedRevision=data.revision;thumbs.clear();viewer?.setGeometry(data);renderTree();hint('');if(!demo&&window.adsk?.fusionSendData)requestAnimationFrame(()=>adsk.fusionSendData('view_ready',JSON.stringify({webgl:!!viewer,units:state.units.length,bodies:geometry.size,drawnBodies:viewer?.items.length||0,width:$('modelCanvas').clientWidth,height:$('modelCanvas').clientHeight})));}
+  if(action==='orientation_preview'&&next.orientationPreview){const p=next.orientationPreview;orientationDialog.open(p,state.units.find(u=>u.uid===p.unit),geometry,state,currentPlate);}
+  if(action==='arrangement_preview'&&next.arrangementPreview)arrangementDialog.open(next.arrangementPreview,state,geometry,currentPlate);
   return next;
- }catch(e){if(e.confirmation?.code==='mixed_plate_confirmation'&&['transfer_plate','move'].includes(action)&&data.confirmMixed!==true){message('');transferConfirm.open({action,data},e.confirmation.message);}else message(e.message,true);hint('');}finally{setBusy(false);}
+  }catch(e){if(e.confirmation?.code==='mixed_plate_confirmation'&&['transfer_plate','move'].includes(action)&&data.confirmMixed!==true){message('');transferConfirm.open({action,data},e.confirmation.message);}else message(e.message,true);hint('');}finally{if(ticker)clearInterval(ticker);setBusy(false);}
 }
 function selectOptions(id,options,value){const el=$(id);el.replaceChildren();let found=false;for(const o of options){const p=node('option',o.name);p.value=o.key;p.selected=o.key===value||o.name===value;found||=p.selected;el.append(p);}if(value&&!found){const p=node('option',value+'（请选择兼容预设）');p.value=value;p.selected=true;el.prepend(p);}}
 function setMode(value){mode=value;document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));$('modeTitle').textContent={group:'拖动模型到另一模型上，建立整体',face:'旋转查看；悬停高亮平面，点击后贴板',layout:'彩色实体排盘 · 可拖动调整位置'}[mode];$('viewHelp').textContent={group:'左键拖到另一模型上自动分组；原装配关系不变。右键旋转，Shift＋拖动平移，滚轮缩放。',face:'左键拖动或右键拖动旋转查看，滚轮缩放；单击平面后朝下贴板。视角旋转本身不会修改模型方向。',layout:'拖动模型调整盘内位置；拖动左侧树节点到目标盘换盘。整组移动，不拆散内部实体。'}[mode];syncViewer();}
-function choose(uid){selected=uid;const u=selectedUnit();if(mode==='layout'&&u?.placement)currentPlate=u.placement.plate;renderTree();renderInspector();syncViewer();}
-function switchPlate(index){if(busy||!state.plates.some(p=>p.index===index))return;currentPlate=index;if(selectedUnit()?.placement?.plate!==index)selected=state.units.find(u=>u.placement?.plate===index)?.uid||null;setMode('layout');renderInspector();}
+function choose(uid){selected=uid;const u=selectedUnit();if(mode==='layout'&&u?.placement)currentPlate=u.placement.plate;renderTree();renderInspector();syncViewer();syncPlacementControls();}
+function switchPlate(index){if(busy||!state.plates.some(p=>p.index===index))return;currentPlate=index;if(selectedUnit()?.placement?.plate!==index)selected=state.units.find(u=>u.placement?.plate===index)?.uid||null;setMode('layout');renderInspector();syncPlacementControls();}
 function togglePlate(index){if(closedPlates.has(index))closedPlates.delete(index);else closedPlates.add(index);renderTree();document.querySelector('.plate-title[data-plate="'+index+'"] .plate-toggle')?.focus();}
 function syncNavigationLimits(){const navigation=BPSPlateNavigation.state(state.plates,currentPlate);$('previousPlate').disabled=busy||navigation.previous===null;$('nextPlate').disabled=busy||navigation.next===null;$('previewPlate').disabled=busy||!navigation.total;}
 function syncViewer(){
@@ -47,7 +52,7 @@ function update(next){state=next;if(next.profiles)profiles=next.profiles;if(!sta
  selectOptions('bed',Object.entries(profiles.beds||{}).map(([key,name])=>({key,name})),state.config.bed);
  for(const id of ['gap','margin','refinement','nozzle'])$(id).value=state.config[id]??'';
  for(const id of ['allowZRotation','allowMixedPlates','includeHidden','enableSupport'])$(id).checked=!!state.config[id];
- $('bambuExe').value=state.exe||'';renderColors();renderTree();renderInspector();syncViewer();
+  $('bambuExe').value=state.exe||'';renderColors();renderTree();renderInspector();syncViewer();syncPlacementControls();
  $('footer').textContent=state.lastExport?'已导出：'+state.lastExport.path:'原设计不修改 · 分组和方向编辑可撤销';
  $('connection').textContent=demo?'离线交互测试 · 非 Fusion 实测':'Fusion 插件';
  $('undo').disabled=!state.canUndo;$('redo').disabled=!state.canRedo;
@@ -78,11 +83,14 @@ function renderTree(){const root=$('plateTree');root.replaceChildren();const unp
  if(plate.index){installDrop(title,uid=>treeDrop(uid,{plate:plate.index}));if(!plate.units.length){const del=node('button','×','plate-delete');del.title='删除空盘';del.onclick=e=>{e.stopPropagation();request('delete_plate',{plate:plate.index});};title.append(del);}}
  branch.append(title);if(!closedPlates.has(plate.index))for(const u of plate.units)branch.append(unitRow(u));root.append(branch);}if(!branches.length)root.append(node('p','读取模型后显示打印盘与实体树。','muted'));}
 function selectedUnit(){return state.units.find(u=>u.uid===selected);}
+function syncOrientationControls(){const u=selectedUnit(),placed=state.units.filter(x=>x.placement),current=placed.filter(x=>x.placement.plate===currentPlate);if(!busy)$('orientationLocked').checked=!!u?.orientationLocked;$('orientationLocked').disabled=busy||!u;$('autoOrient').disabled=busy||!u||!!u.orientationLocked;$('autoOrientCurrent').disabled=busy||!current.some(x=>!x.orientationLocked);$('autoOrientAll').disabled=busy||!placed.some(x=>!x.orientationLocked);$('autoOrient').title=u?.orientationLocked?'取消朝向锁定后才能生成建议。':'为所选打印单元生成朝向预览。';}
+function syncPlacementControls(){const ready=!!state.plates.length&&state.units.every(u=>!!u.placement),current=state.units.some(u=>u.placement?.plate===currentPlate);$('autoPlaceAll').disabled=busy||!ready;$('autoPlaceCurrent').disabled=busy||!ready||!current;}
 function renderInspector(){const u=selectedUnit();$('selectedTitle').textContent=u?.name||'尚未选择';$('groupBadge').textContent=u?.members.length>1?'整体锁定':'';$('unitDetails').textContent=u?u.direction+'\n'+u.size.map(v=>v.toFixed(1)).join(' × ')+' mm':'';$('unitName').value=u?.name||'';$('direction').value='keep';
  selectOptions('placementPlate',state.plates.map(p=>({key:String(p.index),name:'第 '+p.index+' 盘'})),String(u?.placement?.plate||currentPlate));
  for(const [id,key]of [['placementX','x'],['placementY','y'],['placementAngle','angle']])$(id).value=u?.placement?.[key]??'';
  const root=$('memberColors');root.replaceChildren();for(const m of u?.members||[]){const box=node('div',undefined,'member-color');box.append(node('label',m.name+(m.mixedFaces?'（需明确整件颜色）':'')));const input=node('input');input.type='color';input.value=m.color||'#808080';const apply=node('button','应用打印颜色');apply.onclick=()=>request('body_color',{body:m.uid,color:input.value});box.append(input,apply);root.append(box);}
  const messages=$('validation');messages.replaceChildren();for(const error of state.errors||[])messages.append(node('p',error,'validation-error'));for(const warning of state.warnings||[])messages.append(node('p',warning,'validation-warning'));
+ syncOrientationControls();
 }
 function withUnit(fn){const u=selectedUnit();if(!u){message('请先选择模型。',true);return;}fn(u);}
 $('settingsToggle').onclick=()=>$('settingsDrawer').hidden=false;$('settingsClose').onclick=()=>$('settingsDrawer').hidden=true;
@@ -98,7 +106,15 @@ $('renameUnit').onclick=()=>withUnit(u=>request('rename_unit',{unit:u.uid,name:$
 $('ungroup').onclick=()=>withUnit(u=>request('ungroup',{unit:u.uid}));
 $('setDirection').onclick=()=>withUnit(u=>request('direction',{unit:u.uid,mode:$('direction').value}));
 $('pickFace').onclick=()=>withUnit(u=>request('pick_face',{unit:u.uid}));
+function previewOrientation(scope){message('正在调用 Bambu Studio 生成朝向建议，请稍候；当前方向不会改变。');if(scope==='unit')withUnit(u=>request('orientation_preview',{scope,unit:u.uid}));else request('orientation_preview',{scope,plate:currentPlate});}
+$('autoOrient').onclick=()=>previewOrientation('unit');
+$('autoOrientCurrent').onclick=()=>previewOrientation('current');
+$('autoOrientAll').onclick=()=>previewOrientation('all');
+$('orientationLocked').onchange=()=>withUnit(u=>request('orientation_lock',{unit:u.uid,locked:$('orientationLocked').checked}));
 $('arrange').onclick=async()=>{const result=await request('arrange');if(result){closedPlates.clear();setMode('layout');renderTree();}};
+function previewPlacement(scope){message('正在调用 Bambu Studio 自动摆位；确认前不会改变当前盘位。');request('arrangement_preview',{scope,plate:currentPlate});}
+$('autoPlaceCurrent').onclick=()=>previewPlacement('current');
+$('autoPlaceAll').onclick=()=>previewPlacement('all');
 $('addPlate').onclick=()=>request('add_plate');$('expandTree').onclick=()=>{closedPlates.clear();renderTree();};
 $('transferUnit').onclick=()=>withUnit(u=>request('transfer_plate',{unit:u.uid,plate:Number($('placementPlate').value)}));
 $('applyPlacement').onclick=()=>withUnit(u=>request('move',{unit:u.uid,plate:Number($('placementPlate').value),x:Number($('placementX').value),y:Number($('placementY').value),angle:Number($('placementAngle').value)}));
@@ -110,10 +126,12 @@ for(const id of ['gap','margin'])$(id).onchange=()=>request('config',{[id]:Numbe
 for(const id of ['allowZRotation','allowMixedPlates','includeHidden','enableSupport'])$(id).onchange=()=>request('config',{[id]:$(id).checked});
 $('loadInstallation').onclick=()=>request('installation',{executable:$('bambuExe').value});$('loadProfiles').onclick=()=>request('profile_root',{path:$('profileRoot').value});
 $('resetUnits').onclick=()=>{if(confirm('确认重建所有分组和方向规则？原设计不会修改。'))request('reset_units');};
-window.addEventListener('keydown',e=>{if($('transferConfirm').open||e.target.closest('input,select,textarea'))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();request(e.shiftKey?'redo':'undo');}});
+window.addEventListener('keydown',e=>{if($('transferConfirm').open||$('orientationDialog').open||$('arrangementDialog').open||e.target.closest('input,select,textarea'))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();request(e.shiftKey?'redo':'undo');}});
 window.fusionJavaScriptHandler={handle(action,data){try{if(action==='state'){update(JSON.parse(data));if(!busy&&state.units.length&&loadedRevision!==state.geometryRevision)request('bootstrap');return 'OK';}if(action==='inspect')return JSON.stringify({title:document.title,summary:$('summary').textContent,webgl:!!viewer,units:state.units.length,plates:state.plates.length,geometryBodies:geometry.size,mode,selected});if(action==='capture_view'){if(!viewer||busy||!geometry.size)throw Error('三维视图尚未准备好。');const options=JSON.parse(data||'{}');if(options.unit&&state.units.some(u=>u.uid===options.unit))selected=options.unit;if(options.plate&&state.plates.some(p=>p.index===options.plate))currentPlate=options.plate;if(['group','face','layout'].includes(options.mode))setMode(options.mode);viewer.fit();viewer.render();return JSON.stringify({mode,selected,plate:currentPlate,bodies:geometry.size,width:$('modelCanvas').width,height:$('modelCanvas').height,image:$('modelCanvas').toDataURL('image/png')});}return 'UNSUPPORTED';}catch(e){return JSON.stringify({error:e.message});}}};
 window.addEventListener('DOMContentLoaded',()=>{
  transferConfirm=new TransferConfirmation($('transferConfirm'),$('transferConfirmText'),$('transferAccept'),$('transferCancel'),(action,data)=>request(action,data));
+ orientationDialog=new OrientationPreview({dialog:$('orientationDialog'),title:$('orientationTitle'),intro:$('orientationIntro'),status:$('orientationStatus'),platePicker:$('orientationPlatePicker'),plate:$('orientationPreviewPlate'),beforeSize:$('orientationBeforeSize'),afterSize:$('orientationAfterSize'),beforeCanvas:$('orientationBeforeCanvas'),afterCanvas:$('orientationAfterCanvas'),beforeLabels:$('orientationBeforeLabels'),afterLabels:$('orientationAfterLabels'),apply:$('orientationApply'),cancel:$('orientationCancel')},(canvas,labels)=>new BPS3D.Viewer(canvas,labels),async p=>{const result=await request('orientation_apply',{token:p.token});if(result){if(p.batch)setMode('layout');else{selected=p.unit;setMode('face');renderInspector();}}},p=>request('orientation_cancel',{token:p.token}));
+ arrangementDialog=new ArrangementPreview({dialog:$('arrangementDialog'),title:$('arrangementTitle'),status:$('arrangementStatus'),plate:$('arrangementPreviewPlate'),beforeCanvas:$('arrangementBeforeCanvas'),afterCanvas:$('arrangementAfterCanvas'),beforeLabels:$('arrangementBeforeLabels'),afterLabels:$('arrangementAfterLabels'),apply:$('arrangementApply'),cancel:$('arrangementCancel')},(canvas,labels)=>new BPS3D.Viewer(canvas,labels),async p=>{const result=await request('arrangement_apply',{token:p.token});if(result)setMode('layout');},p=>request('arrangement_cancel',{token:p.token}));
  document.querySelector('.tree-help').textContent='此处拖动仅用于换盘，不会合成整体。拖到模型上即移入它所在的盘。';
  $('ungroup').title='成员保留在当前盘并保持原位置和方向；不重新排盘。';
  const tree=$('plateTree');tree.addEventListener('pointerdown',treePointerDown);tree.addEventListener('pointermove',treePointerMove);tree.addEventListener('pointerup',treePointerUp);tree.addEventListener('pointercancel',()=>{treeDrag=null;clearTreeTarget();hint('');});tree.addEventListener('dragstart',e=>e.preventDefault());

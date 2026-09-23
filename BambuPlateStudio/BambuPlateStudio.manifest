@@ -2,8 +2,8 @@
   "autodeskProduct": "Fusion360",
   "type": "addin",
   "author": "Local workspace",
-  "description": {"": "Bambu 多盘导出：打印组、贴板面、颜色与排盘预览"},
-  "version": "0.1.6",
+  "description": {"": "MF3D打印摆盘助手：打印组、贴板面、颜色与多盘 3MF"},
+  "version": "0.1.10",
   "runOnStartup": false,
   "supportedOS": "windows|mac"
 }

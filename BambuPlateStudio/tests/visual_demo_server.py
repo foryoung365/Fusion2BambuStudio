@@ -7,9 +7,11 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer,SimpleHTTPRequestHandler
 import xml.etree.ElementTree as ET
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
-from BambuPlateStudio.core.model import Body,Session,PrintUnit,Plate,Placement
+from BambuPlateStudio.core.model import Body,Session,PrintUnit,Plate,Placement,new_id
+from BambuPlateStudio.core.auto_orient import suggest,suggest_many,apply_rotation
+from BambuPlateStudio.core.auto_place import suggest as suggest_positions,apply_positions
 from BambuPlateStudio.core.geometry import face_down,cross,unit
-from BambuPlateStudio.core.layout import Bed,arrange,validate,footprint
+from BambuPlateStudio.core.layout import Bed,arrange,validate,footprint,process_clearance,auto_brim_reserve
 from BambuPlateStudio.core.visual_edit import EditHistory,merge_onto,transfer_to_plate
 from BambuPlateStudio.core.profiles import ProfileCatalog,discover,BEDS
 from BambuPlateStudio.core.package3mf import NS
@@ -18,7 +20,7 @@ ROOT=Path(__file__).resolve().parent.parent
 
 
 def load_fixture():
-    path=ROOT/'test_artifacts'/'fusion_paper_petg_clearance.3mf'
+    path=Path(sys.argv[1]) if len(sys.argv)>1 else ROOT/'test_artifacts'/'fusion_paper_petg_clearance.3mf'
     with zipfile.ZipFile(path) as z:
         model=ET.fromstring(z.read('3D/3dmodel.model'));config=ET.fromstring(z.read('Metadata/model_settings.config'))
         meta=json.loads(z.read('Metadata/BambuPlateStudio.json'))
@@ -46,14 +48,19 @@ def load_fixture():
 class Demo:
     def __init__(self):
         self.session=load_fixture();self.history=EditHistory();self.lock=threading.Lock();self.notices=[]
+        self.orientation_preview=None;self.orientation_snapshot=None
+        self.arrangement_preview=None;self.arrangement_snapshot=None
         self.exe,roots=discover();self.catalog=ProfileCatalog(roots);self.bed=Bed.from_profile(self.catalog.resolve('machine',self.session.config['printer']))
+        process=self.catalog.resolve('process',self.session.config['process'])
+        self.session.config['printClearance']=process_clearance(process,self.session.config['enableSupport'])
+        self.session.config['autoBrimReserve']=auto_brim_reserve(process)
 
     def state(self):
         from dataclasses import asdict
         s=self.session;units=[]
         for u in s.units.values():
             p=s.placements.get(u.uid)
-            units.append({'uid':u.uid,'name':u.name,'rotation':u.rotation,'direction':u.orientation_label,
+            units.append({'uid':u.uid,'name':u.name,'rotation':u.rotation,'direction':u.orientation_label,'orientationLocked':u.orientation_locked,
                 'members':[{'uid':m,'name':s.bodies[m].name,'path':s.bodies[m].component_path,'color':s.effective_color(m),'mixedFaces':False} for m in u.members],
                 'size':u.geometry(s.bodies)[2],'placement':asdict(p) if p else None,'rect':footprint(s,p) if p else None})
         errors,warnings=validate(s,self.bed)
@@ -63,16 +70,48 @@ class Demo:
         return {'document':'纸巾盒 · 离线交互测试','units':units,'plates':[asdict(p) for p in s.plates],
                 'config':s.config,'bed':asdict(self.bed),'profiles':opts,'errors':errors,'warnings':warnings,
                 'colorProfiles':s.color_profiles,'notices':self.notices,'geometryRevision':1,'exe':self.exe,
-                'canUndo':bool(self.history.undo_stack),'canRedo':bool(self.history.redo_stack),'lastExport':None}
+                 'canUndo':bool(self.history.undo_stack),'canRedo':bool(self.history.redo_stack),'lastExport':None,
+                 'orientationPreview':self.orientation_preview,'arrangementPreview':self.arrangement_preview}
 
     def dispatch(self,action,data):
         s=self.session
         if action=='viewport_data':return {'revision':1,'bodies':[{'uid':b.uid,'vertices':b.vertices,'triangles':b.triangles} for b in s.bodies.values()]}
         if action in ('bootstrap','scan'):return self.state()
-        if action in ('undo','redo'):self.history.restore(s,action=='undo');return self.state()
+        if action in ('undo','redo'):
+            self.orientation_preview=None;self.arrangement_preview=None;self.history.restore(s,action=='undo');return self.state()
         before=self.history.snapshot(s);self.notices=[]
         try:
-            if action=='group_drop':merge_onto(s,data['source'],data['target'])
+            if action=='orientation_preview':
+                self.arrangement_preview=None
+                scope=data.get('scope','unit')
+                if scope=='unit':self.orientation_preview=suggest(s,data['unit'],self.catalog,self.exe)
+                else:
+                    numbers=[data['plate']] if scope=='current' else [p.index for p in s.plates if any(x.plate==p.index for x in s.placements.values())]
+                    selected=[uid for uid in s.units if uid in s.placements and s.placements[uid].plate in numbers]
+                    self.orientation_preview=suggest_many(s,selected,numbers,self.catalog,self.exe)
+                    self.orientation_preview['scope']=scope
+                self.orientation_preview['token']=new_id();self.orientation_snapshot=self.history.snapshot(s)
+                return self.state()
+            elif action=='orientation_cancel':self.orientation_preview=None;return self.state()
+            elif action=='orientation_apply':
+                if not self.orientation_preview or data['token']!=self.orientation_preview['token'] or s.rules()!=self.orientation_snapshot:raise ValueError('建议已过期')
+                if self.orientation_preview.get('batch'):
+                    if not self.orientation_preview['units']:raise ValueError('没有需要改变的朝向')
+                    for uid,proposal in self.orientation_preview['units'].items():apply_rotation(s,uid,proposal['rotation'])
+                else:apply_rotation(s,self.orientation_preview['unit'],self.orientation_preview['rotation'])
+            elif action=='orientation_lock':s.units[data['unit']].orientation_locked=data['locked']
+            elif action=='arrangement_preview':
+                self.orientation_preview=None
+                numbers=[data['plate']] if data['scope']=='current' else [p.index for p in s.plates if any(x.plate==p.index for x in s.placements.values())]
+                self.arrangement_preview=suggest_positions(s,numbers,self.catalog,self.exe)
+                self.arrangement_preview['token']=new_id();self.arrangement_preview['scope']=data['scope']
+                self.arrangement_snapshot=self.history.snapshot(s)
+                return self.state()
+            elif action=='arrangement_cancel':self.arrangement_preview=None;return self.state()
+            elif action=='arrangement_apply':
+                if not self.arrangement_preview or data['token']!=self.arrangement_preview['token'] or s.rules()!=self.arrangement_snapshot:raise ValueError('建议已过期')
+                apply_positions(s,self.arrangement_preview)
+            elif action=='group_drop':merge_onto(s,data['source'],data['target'])
             elif action=='transfer_plate':transfer_to_plate(s,data['unit'],data['plate'],self.bed,data.get('confirmMixed') is True)
             elif action=='rename_unit':s.units[data['unit']].name=data['name']
             elif action=='ungroup':s.ungroup(data['unit'])
@@ -105,6 +144,8 @@ class Demo:
         except Exception:
             s.apply_rules(before);raise
         self.history.commit(before,s)
+        self.orientation_preview=None
+        self.arrangement_preview=None
         return self.state()
 
 
