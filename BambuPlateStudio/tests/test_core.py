@@ -26,6 +26,17 @@ def cube(uid='a', color='#040531', low=(0, 0, 0), size=(20, 20, 20)):
     return body
 
 
+def flat_rectangles(uid,rectangles):
+    vertices,triangles=[],[]
+    for x,y,width,height in rectangles:
+        start=len(vertices)
+        vertices.extend(((x,y,0),(x+width,y,0),(x+width,y+height,0),(x,y+height,0)))
+        triangles.extend(((start,start+1,start+2),(start,start+2,start+3)))
+    body=Body(uid,'零件 '+uid,'组件:1','#040531',vertices,triangles,face_colors={'#040531':1.})
+    body.validate()
+    return body
+
+
 class GeometryTests(unittest.TestCase):
     def test_face_down_all_axes(self):
         for normal in [(0,0,1), (0,0,-1), (1,0,0), (0,-1,0), (1,2,3)]:
@@ -57,6 +68,36 @@ class GeometryTests(unittest.TestCase):
         session.placements['b'].unit = 'b'
         self.assertTrue(any('间距' in e for e in validate(session, bed)[0]))
 
+    def test_concave_footprint_uses_real_mesh_spacing(self):
+        frame=flat_rectangles('frame',[(0,0,2,20),(18,0,2,20),(2,0,16,2)])
+        inner=flat_rectangles('inner',[(0,0,10,10)])
+        session=Session([frame,inner]);session.plates=[Plate(1,'test')]
+        session.placements={'frame':Placement('frame',1,10,10),'inner':Placement('inner',1,15,15)}
+        session.config['gap']=2
+        self.assertEqual(validate(session,Bed(100,100,50))[0],[])
+        session.config['gap']=4
+        self.assertTrue(any('间距' in error for error in validate(session,Bed(100,100,50))[0]))
+        session.config['gap']=2;session.placements['inner'].x=11
+        self.assertTrue(any('间距' in error for error in validate(session,Bed(100,100,50))[0]))
+
+    def test_spacing_tolerates_sub_micron_mesh_rounding(self):
+        session=Session([flat_rectangles('a',[(0,0,10,10)]),flat_rectangles('b',[(0,0,10,10)])])
+        session.plates=[Plate(1,'test')]
+        session.placements={'a':Placement('a',1,10,10),'b':Placement('b',1,21.99998,10)}
+        session.config['gap']=2
+        self.assertEqual(validate(session,Bed(100,100,50))[0],[])
+        session.placements['b'].x=21.98
+        self.assertTrue(any('间距' in error for error in validate(session,Bed(100,100,50))[0]))
+
+    def test_default_has_no_extra_gap_but_rejects_real_overlap(self):
+        session=Session([flat_rectangles('a',[(0,0,10,10)]),flat_rectangles('b',[(0,0,10,10)])])
+        session.plates=[Plate(1,'test')]
+        session.placements={'a':Placement('a',1,10,10),'b':Placement('b',1,20.5,10)}
+        self.assertEqual(session.config['gap'],0)
+        self.assertEqual(validate(session,Bed(100,100,50))[0],[])
+        session.placements['b'].x=19.5
+        self.assertTrue(any('间距' in error for error in validate(session,Bed(100,100,50))[0]))
+
     def test_oversize_never_scaled(self):
         session = Session([cube(size=(300,300,20))])
         original = copy.deepcopy(session.bodies['a'].vertices)
@@ -66,11 +107,13 @@ class GeometryTests(unittest.TestCase):
 
     def test_rules_restore_and_geometry_change_invalidates_layout(self):
         session = Session([cube(), cube('b', low=(30,0,0))])
+        session.config['gap']=5
         session.group(list(session.units), '原位组')
         arrange(session, Bed(256,256,256))
         rules = json.loads(json.dumps(session.rules()))
         restored = Session([cube(), cube('b', low=(30,0,0))])
         self.assertEqual(restored.apply_rules(rules), [])
+        self.assertEqual(restored.config['gap'],5)
         self.assertEqual(len(restored.units), 1)
         self.assertEqual(len(restored.placements), 1)
         changed = Session([cube(size=(21,20,20)), cube('b', low=(30,0,0))])
@@ -115,6 +158,7 @@ class GeometryTests(unittest.TestCase):
 
     def test_auto_brim_is_warning_not_false_collision(self):
         session=Session([cube('a',size=(53.37,36.47,10)),cube('b',size=(40.31,11.82,10))])
+        session.config['gap']=5
         session.config['autoBrimReserve']=5.1
         session.plates=[Plate(1,'test')]
         session.placements={'a':Placement('a',1,10.1,10.1),

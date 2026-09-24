@@ -2,7 +2,9 @@
 import json
 import sys
 import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from http.server import ThreadingHTTPServer,SimpleHTTPRequestHandler
 import xml.etree.ElementTree as ET
@@ -50,6 +52,8 @@ class Demo:
         self.session=load_fixture();self.history=EditHistory();self.lock=threading.Lock();self.notices=[]
         self.orientation_preview=None;self.orientation_snapshot=None
         self.arrangement_preview=None;self.arrangement_snapshot=None
+        self.preview_executor=ThreadPoolExecutor(max_workers=1)
+        self.preview_job=None
         self.exe,roots=discover();self.catalog=ProfileCatalog(roots);self.bed=Bed.from_profile(self.catalog.resolve('machine',self.session.config['printer']))
         process=self.catalog.resolve('process',self.session.config['process'])
         self.session.config['printClearance']=process_clearance(process,self.session.config['enableSupport'])
@@ -71,12 +75,46 @@ class Demo:
                 'config':s.config,'bed':asdict(self.bed),'profiles':opts,'errors':errors,'warnings':warnings,
                 'colorProfiles':s.color_profiles,'notices':self.notices,'geometryRevision':1,'exe':self.exe,
                  'canUndo':bool(self.history.undo_stack),'canRedo':bool(self.history.redo_stack),'lastExport':None,
-                 'orientationPreview':self.orientation_preview,'arrangementPreview':self.arrangement_preview}
+                 'orientationPreview':self.orientation_preview,'arrangementPreview':self.arrangement_preview,
+                 'pendingPreview':self.pending_state()}
+
+    def pending_state(self):
+        if not self.preview_job:return None
+        job=self.preview_job
+        return {'token':job['token'],'kind':job['kind'],'scope':job['scope'],
+                'elapsedSeconds':time.monotonic()-job['started']}
 
     def dispatch(self,action,data):
         s=self.session
         if action=='viewport_data':return {'revision':1,'bodies':[{'uid':b.uid,'vertices':b.vertices,'triangles':b.triangles} for b in s.bodies.values()]}
         if action in ('bootstrap','scan'):return self.state()
+        if action=='preview_status':
+            job=self.preview_job
+            if not job or data.get('token')!=job['token']:raise ValueError('建议已失效')
+            if not job['future'].done():return {'pendingPreview':self.pending_state()}
+            self.preview_job=None
+            proposal=job['future'].result()
+            if s.rules()!=job['snapshot']:raise ValueError('规则已改变')
+            proposal['token']=job['token'];proposal['scope']=job['scope']
+            if job['kind']=='orientation_preview':
+                self.orientation_preview=proposal;self.orientation_snapshot=job['snapshot']
+            else:self.arrangement_preview=proposal;self.arrangement_snapshot=job['snapshot']
+            return self.state()
+        if action in ('orientation_preview','arrangement_preview') and data.get('background') is True:
+            scope=data.get('scope','unit')
+            if action=='orientation_preview':
+                if scope=='unit':work,args=suggest,(s,data['unit'],self.catalog,self.exe)
+                else:
+                    numbers=[data['plate']] if scope=='current' else [p.index for p in s.plates if any(x.plate==p.index for x in s.placements.values())]
+                    selected=[uid for uid in s.units if uid in s.placements and s.placements[uid].plate in numbers]
+                    work,args=suggest_many,(s,selected,numbers,self.catalog,self.exe)
+            else:
+                numbers=[data['plate']] if scope=='current' else [p.index for p in s.plates if any(x.plate==p.index for x in s.placements.values())]
+                work,args=suggest_positions,(s,numbers,self.catalog,self.exe)
+            token=new_id()
+            self.preview_job={'token':token,'kind':action,'scope':scope,'started':time.monotonic(),
+                              'snapshot':self.history.snapshot(s),'future':self.preview_executor.submit(work,*args)}
+            return {'pendingPreview':self.pending_state()}
         if action in ('undo','redo'):
             self.orientation_preview=None;self.arrangement_preview=None;self.history.restore(s,action=='undo');return self.state()
         before=self.history.snapshot(s);self.notices=[]
@@ -110,7 +148,7 @@ class Demo:
             elif action=='arrangement_cancel':self.arrangement_preview=None;return self.state()
             elif action=='arrangement_apply':
                 if not self.arrangement_preview or data['token']!=self.arrangement_preview['token'] or s.rules()!=self.arrangement_snapshot:raise ValueError('建议已过期')
-                apply_positions(s,self.arrangement_preview)
+                apply_positions(s,self.arrangement_preview,data.get('acceptBambuSpacing') is True)
             elif action=='group_drop':merge_onto(s,data['source'],data['target'])
             elif action=='transfer_plate':transfer_to_plate(s,data['unit'],data['plate'],self.bed,data.get('confirmMixed') is True)
             elif action=='rename_unit':s.units[data['unit']].name=data['name']

@@ -1,6 +1,6 @@
 # Fusion2BambuStudio
 
-面向 Autodesk Fusion 的 **MF3D打印摆盘助手**，当前开发预览版本为 **0.1.11**。
+面向 Autodesk Fusion 的 **MF3D打印摆盘助手**，当前开发预览版本为 **0.1.13**。
 
 ## 功能
 

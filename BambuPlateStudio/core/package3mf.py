@@ -54,7 +54,7 @@ def write_project(path, session, catalog, allow_unarranged=False):
     # A scratch input for Bambu --arrange may start with bad XY positions;
     # final exports still enforce every validation error.
     xy_errors=('超出打印板实际范围：','未满足设置的板边距或明确启用的裙边预留：',
-               '进入打印板禁用区：','包围矩形未满足设置的实体间距：')
+               '进入打印板禁用区：','检测到实体轮廓间距约 ')
     blocking=[error for error in errors if not (allow_unarranged and error.startswith(xy_errors))]
     if blocking:
         raise ValueError('\n'.join(blocking))
@@ -68,7 +68,7 @@ def write_project(path, session, catalog, allow_unarranged=False):
         settings['enable_prime_tower'] = '0'
 
     model = ET.Element('model', {'xmlns': CORE, 'unit': 'millimeter', 'xml:lang': 'zh-CN'})
-    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.11'
+    ET.SubElement(model, 'metadata', name='Application').text = 'BambuPlateStudio 0.1.13'
     ET.SubElement(model, 'metadata', name='BambuStudio:3mfVersion').text = '1'
     resources, build = ET.SubElement(model, 'resources'), ET.SubElement(model, 'build')
     model_config = ET.Element('config')

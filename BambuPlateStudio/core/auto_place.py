@@ -1,4 +1,4 @@
-"""Ask Bambu to arrange one existing plate at a time; import positions only."""
+"""Ask Bambu to arrange each plate; preview extra plates before importing positions."""
 import copy
 import tempfile
 import time
@@ -7,13 +7,9 @@ from pathlib import Path
 from .bambu import run_project
 from .bambu_validation import read,nearest_error
 from .geometry import bounds,signed_volume
-from .layout import Bed,validate
+from .layout import Bed,validate,scene_origin
 from .model import Session,Plate
 from .package3mf import write_project
-
-
-class PlateOverflow(ValueError):
-    pass
 
 
 def plate_query(session, number):
@@ -33,20 +29,23 @@ def plate_query(session, number):
     return query
 
 
-def extract_positions(query,seed,native):
+def extract_positions(query,seed,native,bed):
     original,original_groups,original_plates,_=read(seed,orientation=True)
     arranged,groups,plates,_=read(native,orientation=True)
     expected=sorted(sorted(member+'.mesh' for member in unit.members) for unit in query.units.values())
     if original_plates!=1 or groups!=expected or original_groups!=expected or original.keys()!=arranged.keys():
         raise ValueError('Bambu 改变了打印组或实体，已拒绝摆位结果。')
-    if plates!=1 or any(item['plate']!=1 for item in arranged.values()):
-        raise PlateOverflow('Bambu 建议拆到更多打印盘，原盘位已保留。')
+    if plates<1 or any(not 1<=item['plate']<=plates for item in arranged.values()):
+        raise ValueError('Bambu 返回了无效的打印盘，已拒绝摆位结果。')
     positions={};maximum=0.
     for unit in query.units.values():
         displacement=None
+        destination={arranged[member+'.mesh']['plate'] for member in unit.members}
+        if len(destination)!=1:raise ValueError('Bambu 拆散了不可拆分打印整体，已拒绝摆位结果。')
+        native_plate=destination.pop()
         for member in unit.members:
             key=member+'.mesh';before=original[key];after=arranged[key]
-            if (before['plate']!=1 or after['plate']!=1 or
+            if (before['plate']!=1 or after['plate']!=native_plate or
                 (before['name'],before['unitName'],before['color'],before['material'])!=
                 (after['name'],after['unitName'],after['color'],after['material']) or
                 len(before['triangles'])!=len(after['triangles'])):
@@ -66,17 +65,21 @@ def extract_positions(query,seed,native):
                 raise ValueError('Bambu 改变了源网格，已拒绝摆位结果。')
             displacement=delta;maximum=max(maximum,error)
         old=query.placements[unit.uid]
-        positions[unit.uid]={'x':old.x+displacement[0],'y':old.y+displacement[1]}
+        origin=scene_origin(native_plate,plates,bed)
+        positions[unit.uid]={'nativePlate':native_plate,
+                             'x':old.x+displacement[0]-origin[0],
+                             'y':old.y+displacement[1]-origin[1]}
     return positions,maximum
 
 
 def suggest_plate(session,number,catalog,executable):
     query=plate_query(session,number)
+    bed=Bed.from_profile(catalog.resolve('machine',session.config['printer']))
     with tempfile.TemporaryDirectory(prefix='BPS_arrange_') as directory:
         seed=Path(directory)/'query.3mf'
         write_project(seed,query,catalog,allow_unarranged=True)
         native,_=run_project(seed,directory,catalog,executable,arrange=True)
-        return extract_positions(query,seed,native)
+        return extract_positions(query,seed,native,bed)
 
 
 def suggest(session,numbers,catalog,executable):
@@ -86,32 +89,54 @@ def suggest(session,numbers,catalog,executable):
     available={p.index for p in session.plates}
     if not numbers or len(set(numbers))!=len(numbers) or any(n not in available for n in numbers):
         raise ValueError('自动摆位的打印盘无效。')
-    started=time.monotonic();proposals={};skipped=[];maximum=0.
+    started=time.monotonic();proposals={};new_plates=[];maximum=0.
+    next_plate=len(session.plates)
     with ThreadPoolExecutor(max_workers=min(2,len(numbers))) as workers:
         futures={number:workers.submit(suggest_plate,session,number,catalog,executable) for number in numbers}
         for number in numbers:
-            try:positions,error=futures[number].result()
-            except PlateOverflow as exc:
-                if len(numbers)==1:raise ValueError(f'第 {number} 盘：{exc}') from exc
-                skipped.append({'plate':number,'reason':str(exc)})
-                continue
-            proposals.update(positions);maximum=max(maximum,error)
+            positions,error=futures[number].result()
+            source=next(p for p in session.plates if p.index==number)
+            occupied=sorted({position['nativePlate'] for position in positions.values()})
+            destinations={occupied[0]:number}
+            for native in occupied[1:]:
+                next_plate+=1
+                destinations[native]=next_plate
+                new_plates.append({'index':next_plate,'name':f'由第 {number} 盘拆出',
+                                   'allow_mixed':source.allow_mixed})
+            for uid,position in positions.items():
+                proposals[uid]={'plate':destinations[position['nativePlate']],
+                                'x':position['x'],'y':position['y']}
+            maximum=max(maximum,error)
     trial=copy.copy(session)
     trial.units={uid:copy.copy(unit) for uid,unit in session.units.items()}
     trial.placements=copy.deepcopy(session.placements)
+    trial.plates=copy.deepcopy(session.plates)+[Plate(**plate) for plate in new_plates]
     for uid,position in proposals.items():
+        trial.placements[uid].plate=position['plate']
         trial.placements[uid].x=position['x'];trial.placements[uid].y=position['y']
     bed=Bed.from_profile(catalog.resolve('machine',session.config['printer']))
     errors,warnings=validate(trial,bed)
-    if not proposals:errors.append('Bambu 未能在保留原盘号的条件下重新摆放任何打印盘。')
-    moved=sum(abs(session.placements[uid].x-p['x'])>.001 or
+    can_accept_bambu_spacing=False
+    if errors and session.config['gap']>0:
+        trial.config=copy.deepcopy(session.config)
+        trial.config['gap']=0.
+        can_accept_bambu_spacing=not validate(trial,bed)[0]
+    if not proposals:errors.append('Bambu 未能为所选打印盘生成建议。')
+    moved=sum(session.placements[uid].plate!=p['plate'] or abs(session.placements[uid].x-p['x'])>.001 or
               abs(session.placements[uid].y-p['y'])>.001 for uid,p in proposals.items())
-    return {'plates':list(numbers),'placements':proposals,'skipped':skipped,'moved':moved,'total':len(proposals),
+    warning=((f'建议新增 {len(new_plates)} 个打印盘并调整盘内位置；' if new_plates else '仅建议盘内 X/Y 位置；')+
+             '不转向、不拆分整体。确认前不修改原盘位；若未满足当前间距或板边距，不能应用。')
+    return {'plates':list(numbers)+[p['index'] for p in new_plates],
+            'newPlates':new_plates,'placements':proposals,'skipped':[],'moved':moved,'total':len(proposals),
             'errors':errors,'warnings':warnings,'elapsedSeconds':time.monotonic()-started,'maxVertexErrorMm':maximum,
-            'warning':'仅建议盘内 X/Y 位置；不换盘、不转向、不拆分整体。若未满足当前间距或板边距，不能确认应用。'}
+            'canAcceptBambuSpacing':can_accept_bambu_spacing,'warning':warning}
 
 
-def apply_positions(session,proposal):
-    if proposal['errors']:raise ValueError('建议摆位不满足当前设置的安全间距或板边距，未应用。')
+def apply_positions(session,proposal,accept_bambu_spacing=False):
+    if proposal['errors'] and not (accept_bambu_spacing and proposal.get('canAcceptBambuSpacing')):
+        raise ValueError('建议摆位不满足当前设置的安全间距或板边距，未应用。')
+    if proposal['errors']:session.config['gap']=0.
+    session.plates.extend(Plate(**plate) for plate in proposal.get('newPlates',[]))
     for uid,position in proposal['placements'].items():
+        session.placements[uid].plate=position['plate']
         session.placements[uid].x=position['x'];session.placements[uid].y=position['y']

@@ -2,6 +2,8 @@ import hashlib
 import json
 import math
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 import adsk.core
@@ -179,6 +181,8 @@ class Controller:
         self.orientation_snapshot = None
         self.arrangement_preview = None
         self.arrangement_snapshot = None
+        self.preview_executor = None
+        self.preview_job = None
 
     def clear_preview(self):
         if self.preview_group and self.preview_group.isValid:
@@ -288,7 +292,8 @@ class Controller:
                   'colorProfiles': self.session.color_profiles, 'exe': self.exe}
         result.update(geometryRevision=self.geometry_revision,canUndo=bool(self.history.undo_stack),
                       canRedo=bool(self.history.redo_stack),orientationPreview=self.orientation_preview,
-                      arrangementPreview=self.arrangement_preview)
+                      arrangementPreview=self.arrangement_preview,
+                      pendingPreview=self.pending_preview())
         if include_profiles:
             result['profiles'] = self.profile_state()
         return result
@@ -304,6 +309,81 @@ class Controller:
             current[uid].face_colors != body.face_colors for uid, body in self.session.bodies.items()):
             raise ValueError('源模型或颜色已改变，请重新读取并排盘后导出。')
 
+    def pending_preview(self):
+        job=getattr(self,'preview_job',None)
+        if not job:return None
+        return {'token':job['token'],'kind':job['kind'],'scope':job['scope'],
+                'total':job['total'],'elapsedSeconds':time.monotonic()-job['started']}
+
+    def start_preview(self,action,data):
+        self.assert_document()
+        if self.preview_job:raise ValueError('已有朝向或摆位建议正在计算，请等待完成。')
+        scope=data.get('scope','unit' if action=='orientation_preview' else None)
+        session=self.session
+        if action=='orientation_preview':
+            if scope=='unit':
+                uid=data['unit']
+                if uid not in session.units:raise ValueError('所选打印单元已失效。')
+                work=suggest;arguments=(session,uid,self.catalog,self.exe);total=1
+            elif scope in ('current','all'):
+                if scope=='current':
+                    number=data.get('plate')
+                    if type(number) is not int or not any(p.index==number for p in session.plates):
+                        raise ValueError('请选择有效的当前打印盘。')
+                    plates=[number]
+                else:plates=[p.index for p in session.plates if any(x.plate==p.index for x in session.placements.values())]
+                selected=[uid for uid in session.units if uid in session.placements and session.placements[uid].plate in plates]
+                if not selected:raise ValueError('所选范围没有已分盘的打印单元。')
+                work=suggest_many;arguments=(session,selected,plates,self.catalog,self.exe);total=len(selected)
+            else:raise ValueError('请选择所选件、当前盘或所有盘。')
+        elif action=='arrangement_preview':
+            if scope=='current':
+                number=data.get('plate')
+                if type(number) is not int or not any(p.index==number for p in session.plates):
+                    raise ValueError('请选择有效的当前打印盘。')
+                plates=[number]
+            elif scope=='all':plates=[p.index for p in session.plates if any(x.plate==p.index for x in session.placements.values())]
+            else:raise ValueError('请选择当前盘或所有盘。')
+            if not plates:raise ValueError('没有可摆放的打印盘。')
+            work=suggest_positions;arguments=(session,plates,self.catalog,self.exe);total=len(plates)
+        else:raise ValueError('未知的预览类型。')
+        snapshot=self.history.snapshot(session)
+        if self.preview_executor is None:self.preview_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='MF3D_preview')
+        self.orientation_preview=None;self.orientation_snapshot=None
+        self.arrangement_preview=None;self.arrangement_snapshot=None
+        token=new_id()
+        future=self.preview_executor.submit(work,*arguments)
+        self.preview_job={'token':token,'kind':action,'scope':scope,'total':total,
+                          'started':time.monotonic(),'future':future,'session':session,
+                          'snapshot':snapshot,'document':self.app.activeDocument,
+                          'revision':self.geometry_revision}
+        return {'pendingPreview':self.pending_preview()}
+
+    def preview_status(self,data):
+        job=self.preview_job
+        if not job or data.get('token')!=job['token']:raise ValueError('预览计算已失效，请重新请求。')
+        if self.app.activeDocument!=job['document']:
+            self.preview_job=None
+            raise ValueError('当前文档已切换，已丢弃朝向或摆位建议。')
+        if not job['future'].done():return {'pendingPreview':self.pending_preview()}
+        self.preview_job=None
+        proposal=job['future'].result()
+        if self.session is not job['session'] or self.geometry_revision!=job['revision'] or self.session.rules()!=job['snapshot']:
+            raise ValueError('模型或打印规则已改变，已丢弃过期建议。')
+        self.assert_source_current()
+        proposal['token']=job['token'];proposal['scope']=job['scope']
+        if job['kind']=='orientation_preview':
+            self.orientation_preview=proposal;self.orientation_snapshot=job['snapshot']
+            self.notices=['朝向建议已生成，尚未修改任何打印单元。请预览后确认。']
+        else:
+            self.arrangement_preview=proposal;self.arrangement_snapshot=job['snapshot']
+            self.notices=['Bambu 分盘与摆位建议已生成，尚未修改盘位。请预览后确认。']
+        return self.state()
+
+    def close(self):
+        if self.preview_executor:self.preview_executor.shutdown(wait=False,cancel_futures=True)
+        self.preview_executor=None;self.preview_job=None
+
     def export_to(self, path, overwrite=False):
         self.assert_source_current()
         self.update_bed()
@@ -314,6 +394,11 @@ class Controller:
         return self.last_export
 
     def dispatch(self, action, data):
+        if action=='preview_status':return self.preview_status(data)
+        if action in ('orientation_preview','arrangement_preview') and data.get('background') is True:
+            return self.start_preview(action,data)
+        if getattr(self,'preview_job',None) and action not in ('bootstrap','viewport_data'):
+            raise ValueError('正在计算朝向或摆位建议，请等待完成。')
         if action == 'viewport_data':return self.viewport_data()
         if action in ('undo','redo'):
             self.assert_document()
@@ -441,7 +526,7 @@ class Controller:
                 proposal['token']=new_id();proposal['scope']=scope
                 self.arrangement_preview=proposal
                 self.arrangement_snapshot=self.history.snapshot(self.session)
-                self.notices=['Bambu 摆位建议已生成，尚未修改盘位。请预览后确认。']
+                self.notices=['Bambu 分盘与摆位建议已生成，尚未修改盘位。请预览后确认。']
             elif action == 'arrangement_cancel':
                 if self.arrangement_preview and data.get('token')==self.arrangement_preview['token']:
                     self.arrangement_preview=None;self.arrangement_snapshot=None
@@ -451,8 +536,12 @@ class Controller:
                 if not proposal or data.get('token')!=proposal['token'] or self.session.rules()!=self.arrangement_snapshot:
                     raise ValueError('摆位建议已过期，请重新生成；未修改盘位。')
                 self.assert_source_current()
-                apply_positions(self.session,proposal)
-                self.notices=['已应用 Bambu 摆位建议，仅调整所选打印盘内的 X/Y 位置；可撤销。']
+                accepted_spacing=bool(proposal['errors'] and data.get('acceptBambuSpacing') is True)
+                apply_positions(self.session,proposal,accepted_spacing)
+                added=len(proposal.get('newPlates',[]))
+                self.notices=[f'已应用 Bambu 建议，新增 {added} 个打印盘并调整盘位；整体和方向不变，可撤销。' if added else
+                              '已应用 Bambu 摆位建议，仅调整所选打印盘内的 X/Y 位置；可撤销。']
+                if accepted_spacing:self.notices.append('当前文档的件间距已按确认选择改为 0 mm；请切片核查实际裙边和支撑。')
             elif action == 'group':
                 self.session.group(data['units'], data.get('name', '整体打印组'))
             elif action == 'group_drop':

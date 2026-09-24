@@ -2,6 +2,7 @@
 import math
 from dataclasses import dataclass
 from .geometry import rectangle_overlap
+from .footprint import project_unit,footprints_clearance
 from .model import Placement, Plate
 
 
@@ -89,6 +90,7 @@ def validate(session, bed):
     if sorted(grouped) != sorted(session.bodies):
         errors.append('打印组未完整且唯一地覆盖全部实体。')
     by_plate = {}
+    projections={}
     auto_brim_edges=auto_brim_pairs=0
     auto_brim=float(session.config.get('autoBrimReserve',0.))
     for placement in session.placements.values():
@@ -122,9 +124,17 @@ def validate(session, bed):
             errors.append('进入打印板禁用区：'+unit.name)
         peers = by_plate.setdefault(placement.plate, [])
         for other in peers:
-            if rectangle_overlap(rect, footprint(session, other), gap):
-                errors.append('包围矩形未满足设置的实体间距：'+unit.name+' / '+session.units[other.unit].name)
-            elif auto_brim and rectangle_overlap(rect,footprint(session,other),gap+2*auto_brim):
+            other_rect=footprint(session,other)
+            box_close=rectangle_overlap(rect,other_rect,gap)
+            distance=None
+            if box_close:
+                for candidate in (placement,other):
+                    if candidate.unit not in projections:
+                        projections[candidate.unit]=project_unit(session,candidate)
+                distance=footprints_clearance(projections[placement.unit],projections[other.unit],gap)
+            if distance is not None:
+                errors.append(f'检测到实体轮廓间距约 {distance:.2f} mm，小于设置的 {gap:g} mm：'+unit.name+' / '+session.units[other.unit].name)
+            elif auto_brim and rectangle_overlap(rect,other_rect,gap+2*auto_brim):
                 auto_brim_pairs+=1
         peers.append(placement)
         for member in unit.members:

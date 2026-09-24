@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     'printer': 'Bambu Lab P2S 0.4 nozzle', 'nozzle': '0.4',
     'process': '0.20mm Standard @BBL P2S', 'bed': 'Supertack Plate',
     'material': 'PETG', 'filament': 'Generic PETG @BBL P2S',
-    'gap': 5., 'margin': 5., 'allowZRotation': True, 'allowMixedPlates': False,
+    'gap': 0., 'margin': 5., 'allowZRotation': True, 'allowMixedPlates': False,
     'includeHidden': False, 'refinement': 'high', 'enableSupport': False,
     'printClearance': 0.,
 }

@@ -11,20 +11,24 @@ class ArrangementPreview {
  open(proposal,state,geometry,currentPlate){
   this.pending=proposal;this.ready=false;
   this.before=state;
-  this.after={...state,units:state.units.map(unit=>{
+  this.after={...state,plates:[...state.plates,...(proposal.newPlates||[])],units:state.units.map(unit=>{
    const position=proposal.placements[unit.uid];
    return position?{...unit,placement:{...unit.placement,...position}}:unit;
   })};
-  this.e.title.textContent='Bambu 自动摆位预览 · '+(proposal.scope==='all'?'所有盘':'当前盘');
+  this.e.title.textContent=(proposal.newPlates?.length?'Bambu 自动分盘与摆位预览':'Bambu 自动摆位预览')+' · '+(proposal.scope==='all'?'所有盘':'当前盘');
   this.e.plate.replaceChildren();
-  for(const number of proposal.plates){const option=document.createElement('option');option.value=String(number);option.textContent='第 '+number+' 盘';this.e.plate.append(option);}
+  for(const number of proposal.plates){const option=document.createElement('option');option.value=String(number);option.textContent='第 '+number+' 盘'+(proposal.newPlates?.some(plate=>plate.index===number)?'（新增）':'');this.e.plate.append(option);}
   this.e.plate.value=String(proposal.plates.includes(currentPlate)?currentPlate:proposal.plates[0]);
   const skipped=(proposal.skipped||[]).map(item=>`第 ${item.plate} 盘未改动：${item.reason}`);
+  const added=(proposal.newPlates||[]).map(plate=>`新增第 ${plate.index} 盘：`+state.units.filter(unit=>proposal.placements[unit.uid]?.plate===plate.index).map(unit=>unit.name).join('、'));
+  const acceptSpacing=!!(proposal.errors.length&&proposal.canAcceptBambuSpacing);
+  this.e.apply.textContent=acceptSpacing?'按 Bambu 间距确认（当前件间距改为 0 mm）':'确认应用，可撤销';
   this.e.status.textContent=proposal.errors.length?
-   '不能应用：'+proposal.errors.join('\n')+'\n'+skipped.join('\n'):
+   (acceptSpacing?'当前件间距规则不符合 Bambu 建议。可明确选择将当前文档件间距改为 0 mm 后确认；实体重叠与出板仍被拦截。\n':'不能应用：')+
+   proposal.errors.join('\n')+(added.length?'\n'+added.join('\n'):'')+(skipped.length?'\n'+skipped.join('\n'):''):
    `建议移动 ${proposal.moved} / ${proposal.total} 个可处理打印单元。${proposal.warning}`+
-   (skipped.length?'\n'+skipped.join('\n'):'');
-  this.e.status.classList.toggle('invalid',proposal.errors.length>0);
+   (added.length?'\n'+added.join('\n'):'')+(skipped.length?'\n'+skipped.join('\n'):'');
+  this.e.status.classList.toggle('invalid',proposal.errors.length>0&&!acceptSpacing);
   this.e.dialog.showModal();
   try{
    const members=state.units.filter(unit=>proposal.plates.includes(unit.placement?.plate)).flatMap(unit=>unit.members);
@@ -43,8 +47,8 @@ class ArrangementPreview {
   this.views[1].setState(this.after,{mode:'layout',plate});
   this.views.forEach(view=>view.top());
  }
- refreshButtons(busy){this.e.apply.disabled=busy||!this.ready||!!this.pending?.errors.length;this.e.cancel.disabled=busy;}
- apply(){if(!this.pending||!this.ready||this.pending.errors.length)return;const proposal=this.pending;this.pending=null;this.ready=false;this.e.dialog.close();this.onApply(proposal);}
+ refreshButtons(busy){this.e.apply.disabled=busy||!this.ready||!!(this.pending?.errors.length&&!this.pending.canAcceptBambuSpacing);this.e.cancel.disabled=busy;}
+ apply(){if(!this.pending||!this.ready||this.pending.errors.length&&!this.pending.canAcceptBambuSpacing)return;const proposal=this.pending,acceptSpacing=!!(proposal.errors.length&&proposal.canAcceptBambuSpacing);this.pending=null;this.ready=false;this.e.dialog.close();this.onApply(proposal,acceptSpacing);}
  cancel(){const proposal=this.pending;this.pending=null;this.ready=false;this.e.dialog.close();if(proposal)this.onCancel(proposal);}
 }
 if(typeof module!=='undefined'&&module.exports)module.exports=ArrangementPreview;else root.ArrangementPreview=ArrangementPreview;

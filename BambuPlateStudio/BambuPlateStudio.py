@@ -176,7 +176,9 @@ def run(context):
 def stop(context):
     global controller
     ui = adsk.core.Application.get().userInterface
-    if controller:controller.clear_preview()
+    if controller:
+        controller.clear_preview()
+        controller.close()
     palette = ui.palettes.itemById(PALETTE)
     if palette: palette.deleteMe()
     panel = ui.allToolbarPanels.itemById('SolidScriptsAddinsPanel')

@@ -1,4 +1,5 @@
-import ast,copy,unittest
+import ast,copy,time,unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch,Mock
@@ -74,12 +75,14 @@ class ProposalControllerTests(unittest.TestCase):
                     'skipped':[{'unit':'b','reason':'朝向已锁定'}],'errors':[]}
         self.batch_engine=Mock(return_value=copy.deepcopy(self.batch))
         namespace={'suggest':self.engine,'suggest_many':self.batch_engine,
-                   'apply_rotation':apply_rotation,'new_id':new_id,'IDENTITY':IDENTITY,'face_down':face_down}
+                   'apply_rotation':apply_rotation,'new_id':new_id,'IDENTITY':IDENTITY,'face_down':face_down,
+                   'ThreadPoolExecutor':ThreadPoolExecutor,'time':time}
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
         self.c=namespace['Controller'].__new__(namespace['Controller'])
         c=self.c;c.session=Session([cube('a',size=(10,20,30)),cube('b',color='#FF0000')]);c.bed=Bed(256,256,256)
         arrange(c.session,c.bed);c.session.units['b'].orientation_locked=True
         c.history=EditHistory();c.orientation_preview=None;c.orientation_snapshot=None;c.last_export=None;c.notices=[]
+        c.arrangement_preview=None;c.arrangement_snapshot=None;c.preview_executor=None;c.preview_job=None;c.geometry_revision=1
         doc=object();c.app=SimpleNamespace(activeDocument=doc);c.source=SimpleNamespace(document=doc)
         c.catalog=None;c.exe='unused';c.update_bed=lambda:None;c.assert_source_current=Mock()
         c.state=lambda include_profiles=False:{'orientationPreview':c.orientation_preview,'notices':c.notices}
@@ -144,6 +147,20 @@ class ProposalControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'没有需要改变'):
             c.dispatch('orientation_apply',{'token':c.orientation_preview['token']})
         self.assertEqual(c.session.rules(),before)
+
+    def test_background_batch_orientation_can_poll_and_apply_once(self):
+        c=self.c;before=copy.deepcopy(c.session.rules())
+        token=c.dispatch('orientation_preview',{'scope':'all','background':True})['pendingPreview']['token']
+        for _ in range(100):
+            status=c.dispatch('preview_status',{'token':token})
+            if 'pendingPreview' not in status:break
+            time.sleep(.01)
+        self.assertEqual(c.session.rules(),before)
+        self.assertIsNotNone(c.orientation_preview)
+        c.dispatch('orientation_apply',{'token':token})
+        self.assertEqual(len(c.history.undo_stack),1)
+        c.dispatch('undo',{});self.assertEqual(c.session.rules(),before)
+        c.close()
 
 
 class BatchSuggestionTests(unittest.TestCase):

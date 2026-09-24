@@ -44,7 +44,7 @@ class CenterArrangeTests(unittest.TestCase):
         arrange(s,bed)
         self.assertFalse(validate(s,bed)[0])
         cx,cy=self.center(s,bed,1)
-        self.assertAlmostEqual((cx-50)**2+(cy-50)**2,400)
+        self.assertAlmostEqual((cx-50)**2+(cy-50)**2,225)
 
     def test_validation_failure_does_not_replace_existing_layout(self):
         s=Session([cube()]);bed=Bed(100,100,100);arrange(s,bed)
