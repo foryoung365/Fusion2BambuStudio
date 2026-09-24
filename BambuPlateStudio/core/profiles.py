@@ -136,24 +136,101 @@ class ProfileCatalog:
 
 def profile_roots_for(executable):
     exe=Path(executable)
-    if not exe.is_file():return []
-    roots=[str(p) for p in (exe.parent/'resources'/'profiles',exe.parent.parent/'Resources'/'profiles') if p.is_dir()]
+    try:
+        if not exe.is_file():return []
+        roots=[str(p) for p in (exe.parent/'resources'/'profiles',
+                               exe.parent.parent/'resources'/'profiles',
+                               exe.parent.parent/'Resources'/'profiles') if p.is_dir()]
+    except OSError:
+        return []
     if not roots:return []
     user=(Path(os.environ.get('APPDATA',''))/'BambuStudio'/'user' if os.name=='nt'
           else Path.home()/'Library'/'Application Support'/'BambuStudio'/'user')
-    if user.is_dir():roots.append(str(user))
+    try:
+        if user.is_dir():roots.append(str(user))
+    except OSError:
+        pass  # An inaccessible user profile must not hide the bundled presets.
     return roots
+
+
+def _windows_registry_candidates():
+    """Read installer locations; Bambu Studio may be installed on any drive."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    def value(key, name):
+        try:
+            return winreg.QueryValueEx(key, name)[0]
+        except OSError:
+            return ''
+
+    def icon_path(icon):
+        # Windows DisplayIcon commonly ends in an icon index such as `,0`.
+        icon = str(icon).strip()
+        if ',' in icon and icon.rsplit(',', 1)[1].strip().lstrip('-').isdigit():
+            icon = icon.rsplit(',', 1)[0]
+        return icon.strip().strip('"')
+
+    candidates = []
+    app_path = r'Software\Microsoft\Windows\CurrentVersion\App Paths\bambu-studio.exe'
+    uninstall = r'Software\Microsoft\Windows\CurrentVersion\Uninstall'
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            access = winreg.KEY_READ | view
+            try:
+                with winreg.OpenKey(hive, app_path, 0, access) as key:
+                    path = icon_path(value(key, ''))
+                    if path:
+                        candidates.append(Path(path))
+            except OSError:
+                pass
+            try:
+                with winreg.OpenKey(hive, uninstall, 0, access) as base:
+                    index = 0
+                    while True:
+                        try:
+                            name = winreg.EnumKey(base, index)
+                        except OSError:
+                            break
+                        index += 1
+                        try:
+                            with winreg.OpenKey(base, name, 0, access) as key:
+                                display = str(value(key, 'DisplayName')).casefold().replace(' ', '')
+                                if not display.startswith('bambustudio'):
+                                    continue
+                                location = value(key, 'InstallLocation')
+                                if location:
+                                    candidates.append(Path(str(location).strip('"'))/'bambu-studio.exe')
+                                icon = icon_path(value(key, 'DisplayIcon'))
+                                if icon:
+                                    candidates.append(Path(icon))
+                        except OSError:
+                            continue
+            except OSError:
+                pass
+    return candidates
 
 
 def discover():
     candidates = []
-    for root in (os.environ.get('ProgramFiles', ''), os.environ.get('ProgramFiles(x86)', ''),
-                 'D:/Program Files', 'C:/Program Files'):
+    if os.name == 'nt':
+        candidates.extend(_windows_registry_candidates())
+    search_roots = [os.environ.get('ProgramFiles', ''), os.environ.get('ProgramFiles(x86)', ''),
+                    'D:/Program Files', 'C:/Program Files']
+    if os.environ.get('LOCALAPPDATA'):
+        search_roots.append(str(Path(os.environ['LOCALAPPDATA'])/'Programs'))
+    for root in search_roots:
         if root:
             candidates.append(Path(root)/'Bambu Studio'/'bambu-studio.exe')
     if os.name != 'nt':
         candidates += [Path('/Applications/BambuStudio.app/Contents/MacOS/BambuStudio')]
+    seen = set()
     for exe in candidates:
+        key = os.path.normcase(str(exe))
+        if key in seen:continue
+        seen.add(key)
         roots=profile_roots_for(exe)
         if roots:return str(exe),roots
     return '', []

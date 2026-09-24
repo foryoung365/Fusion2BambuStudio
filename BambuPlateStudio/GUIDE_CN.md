@@ -15,7 +15,7 @@
 1. 解压，保留 `BambuPlateStudio` 文件夹名称及内部目录结构。
 2. 打开 Fusion 的“脚本和附加模块”，使用添加本地脚本/加载项的入口，选择这个文件夹。
 3. 选择 `BambuPlateStudio` 并运行。窗口默认 1460 × 920，可调整大小。
-4. 点击“读取当前设计”。本机应已安装 Bambu Studio；插件不需要 MCP、网络服务或外部 Python。
+4. 点击“读取当前设计”。插件会从 Windows 安装登记信息及常见安装目录查找 Bambu Studio，并读取其安装目录内的预设和当前用户预设；安装在其他磁盘也可识别。若使用未登记的便携版，可在“打印配置 → 安装位置及维护”中指定程序路径。插件不需要 MCP、网络服务或外部 Python。
 
 文件夹、Python 入口与 manifest 同名的结构，以及添加本地加载项的方式，遵循 [Autodesk 加载项说明](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/WritingDebugging_UM.htm)。
 
