@@ -3,7 +3,7 @@
   "type": "addin",
   "author": "Local workspace",
   "description": {"": "MF3D打印摆盘助手：打印组、贴板面、颜色与多盘 3MF"},
-  "version": "0.1.13",
+  "version": "0.1.14",
   "runOnStartup": false,
   "supportedOS": "windows|mac"
 }

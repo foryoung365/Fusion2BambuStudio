@@ -32,6 +32,14 @@ class HtmlHandler(adsk.core.HTMLEventHandler):
         global last_view_capture
         args = adsk.core.HTMLEventArgs.cast(args)
         if args.action != 'request':
+            if args.action == 'palette_refresh':
+                palette=adsk.core.Application.get().userInterface.palettes.itemById(PALETTE)
+                if palette and palette.isValid and palette.isVisible:
+                    palette.isVisible=False
+                    palette.isVisible=True
+                event_log.append({'action':'palette_refresh','visible':bool(palette and palette.isValid and palette.isVisible)})
+                args.returnData='OK'
+                return
             if args.action == 'response':
                 try:
                     result=json.loads(json.loads(args.data)['data'])
