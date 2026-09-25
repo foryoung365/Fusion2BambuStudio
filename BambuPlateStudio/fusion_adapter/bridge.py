@@ -170,7 +170,8 @@ class Controller:
         self.source = None
         self.exe, roots = discover()
         self.catalog = ProfileCatalog(roots) if roots else None
-        self.notices, self.last_export = [], None
+        self.notices = self.session.rebind_profiles(self.catalog) if self.catalog else []
+        self.last_export = None
         self.choose_face = None
         self.on_update = None
         self.bed = None
@@ -217,6 +218,8 @@ class Controller:
         if memory_rules or saved:
             rules = memory_rules or json.loads(saved.value)
             self.notices = session.apply_rules(rules, source.aliases_for(rules))
+        if self.catalog:
+            self.notices.extend(session.rebind_profiles(self.catalog))
         self.source, self.session = source, session
         for unit in session.units.values():
             if not unit.face_token:continue
@@ -438,11 +441,12 @@ class Controller:
             if not roots:raise ValueError('程序不存在，或相邻位置没有 Bambu 预设资源目录。')
             catalog=ProfileCatalog(roots)
             self.exe,self.catalog=str(exe),catalog
+            unresolved=self.session.rebind_profiles(catalog)
             self.history.clear();self.last_export=None
             self.orientation_preview=None;self.orientation_snapshot=None
             self.arrangement_preview=None;self.arrangement_snapshot=None
             self.session.invalidate_layout()
-            self.notices=['已切换本次会话使用的 Bambu 安装位置，请重新核对预设。']
+            self.notices=['已切换本次会话使用的 Bambu 安装位置，请重新核对预设。']+unresolved
             return self.state(True)
         if action == 'scan':
             self.scan()
@@ -460,8 +464,9 @@ class Controller:
                 self.session.invalidate_layout()
             return self.state(True)
         elif action == 'profile_root':
-            existing=sorted({str(p.path.parent.parent) for p in self.catalog.records.values()}) if self.catalog else []
+            existing=sorted({str(p.path.parent.parent.parent) for p in self.catalog.records.values()}) if self.catalog else []
             self.catalog = ProfileCatalog(existing+[data['path']])
+            self.notices=self.session.rebind_profiles(self.catalog)
             self.history.clear();self.last_export=None
             self.orientation_preview=None;self.orientation_snapshot=None
             self.arrangement_preview=None;self.arrangement_snapshot=None

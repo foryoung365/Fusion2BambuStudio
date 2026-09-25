@@ -171,6 +171,25 @@ class Session:
     def invalidate_layout(self):
         self.placements, self.plates = {}, []
 
+    def rebind_profiles(self, catalog):
+        """Replace saved profile paths with paths in the current installation."""
+        unresolved = []
+        for field, kind in (('printer', 'machine'), ('process', 'process'),
+                            ('filament', 'filament')):
+            try:
+                reference = self.config[field]
+                self.config[field] = str(catalog.find(kind, reference,
+                    prefer_builtin=reference == DEFAULT_CONFIG[field]).path)
+            except ValueError as exc:
+                unresolved.append(str(exc))
+        for color, reference in list(self.color_profiles.items()):
+            try:
+                self.color_profiles[color] = str(catalog.find('filament', reference,
+                    prefer_builtin=reference == DEFAULT_CONFIG['filament']).path)
+            except ValueError as exc:
+                unresolved.append(str(exc))
+        return unresolved
+
     def rules(self):
         return {'version': 1, 'config': self.config, 'colorProfiles': self.color_profiles,
                 'colorOverrides': self.color_overrides,

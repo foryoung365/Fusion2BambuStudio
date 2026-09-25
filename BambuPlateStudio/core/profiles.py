@@ -32,6 +32,7 @@ class ProfileCatalog:
     def __init__(self, roots):
         self.records = {}
         self.errors = []
+        system_records = {}
         for root in roots:
             root = Path(root)
             if not root.is_dir():
@@ -42,23 +43,55 @@ class ProfileCatalog:
                 try:
                     data = json.loads(path.read_text(encoding='utf-8-sig'))
                     if isinstance(data, dict) and data.get('name'):
-                        self.records[str(path.resolve())] = Profile(path.resolve(), path.parent.name,
+                        resolved = path.resolve()
+                        key = str(resolved)
+                        # Downloaded system profiles replace bundled versions of the
+                        # same file; they must not create ambiguous preset names.
+                        if root.name.casefold() in ('profiles', 'system'):
+                            relative = str(path.relative_to(root)).replace('\\', '/').casefold()
+                            previous = system_records.get(relative)
+                            if previous:
+                                self.records.pop(previous, None)
+                            system_records[relative] = key
+                        self.records[key] = Profile(resolved, path.parent.name,
                             data['name'], path.parent.parent.name, data)
                 except (ValueError, OSError) as exc:
                     self.errors.append(f'{path.name}: {exc}')
         if not self.records:
             raise ValueError('未找到 Bambu Studio 预设，请选择其 resources/profiles 文件夹。')
 
-    def find(self, kind, key, near=None):
+    def find(self, kind, key, near=None, prefer_builtin=False):
         if key in self.records and self.records[key].kind == kind:
             return self.records[key]
+        # Saved Fusion rules may contain an absolute path from another computer.
+        # The vendor/kind/filename tail is stable across Windows and macOS.
+        parts = str(key).replace('\\', '/').split('/')
+        if len(parts) >= 3 and parts[-2] == kind and parts[-1].lower().endswith('.json'):
+            tail = tuple(part.casefold() for part in parts[-3:])
+            matches = [p for p in self.records.values() if p.kind == kind and
+                       tuple(part.casefold() for part in p.path.parts[-3:]) == tail]
+            if len(matches) > 1:
+                origin = parts[-4].casefold() if len(parts) >= 4 else ''
+                if origin in ('profiles', 'user'):
+                    matches = [p for p in matches if p.path.parts[-4].casefold() == origin]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise ValueError(f'预设路径有歧义：{kind} / {key}')
         candidates = [p for p in self.records.values() if p.kind == kind and p.name == key]
         if near:
             local = [p for p in candidates if p.path.parent == near.path.parent]
             if local:
                 candidates = local
-        if len(candidates) != 1:
-            raise ValueError(f'预设不存在或名称有歧义：{kind} / {key}')
+        if not candidates:
+            raise ValueError(f'本机没有对应预设，请在打印配置中重新选择：{kind} / {key}')
+        if len(candidates) > 1:
+            if prefer_builtin:
+                built_in = [p for p in candidates if p.vendor == 'BBL' and
+                            p.path.parts[-4].casefold() in ('profiles', 'system')]
+                if len(built_in) == 1:
+                    return built_in[0]
+            raise ValueError(f'预设名称有歧义，请从列表选择具体预设：{kind} / {key}')
         return candidates[0]
 
     def resolve(self, kind, key, stack=(), near=None):
@@ -144,13 +177,15 @@ def profile_roots_for(executable):
     except OSError:
         return []
     if not roots:return []
-    user=(Path(os.environ.get('APPDATA',''))/'BambuStudio'/'user' if os.name=='nt'
-          else Path.home()/'Library'/'Application Support'/'BambuStudio'/'user')
-    try:
-        if user.is_dir():roots.append(str(user))
-    except OSError:
-        pass  # An inaccessible user profile must not hide the bundled presets.
-    return roots
+    data=(Path(os.environ.get('APPDATA',''))/'BambuStudio' if os.name=='nt'
+          else Path.home()/'Library'/'Application Support'/'BambuStudio')
+    for name in ('system', 'user'):
+        try:
+            directory = data/name
+            if directory.is_dir():roots.append(str(directory))
+        except OSError:
+            pass  # An inaccessible user directory must not hide bundled presets.
+    return list(dict((os.path.normcase(path), path) for path in roots).values())
 
 
 def _windows_registry_candidates():
