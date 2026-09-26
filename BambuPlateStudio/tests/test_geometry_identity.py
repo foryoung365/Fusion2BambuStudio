@@ -1,7 +1,7 @@
 import copy
 import unittest
 from BambuPlateStudio.core.model import Session
-from BambuPlateStudio.core.layout import arrange,Bed
+from BambuPlateStudio.core.layout import arrange,Bed,validate
 from BambuPlateStudio.tests.test_core import cube
 
 
@@ -40,11 +40,12 @@ class GeometryIdentityTests(unittest.TestCase):
         isolated=copy.deepcopy(original);isolated.vertices.append((100,100,100))
         self.assertNotEqual(isolated.geometry_key(),key)
 
-    def test_legacy_rules_remain_conservative(self):
+    def test_legacy_rules_keep_positions_with_change_notice(self):
         original=Session([cube()]);arrange(original,Bed(256,256,256))
         saved=original.rules()
         for source in saved['sources']:source.pop('geometryKey')
         equal=Session([cube()]);self.assertEqual(equal.apply_rules(saved),[])
         changed_order=Session([reordered(original.bodies['a'])])
         self.assertTrue(changed_order.apply_rules(saved))
-        self.assertFalse(changed_order.placements)
+        self.assertEqual(changed_order.placements,original.placements)
+        self.assertEqual(validate(changed_order,Bed(256,256,256))[0],[])

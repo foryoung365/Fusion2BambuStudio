@@ -229,6 +229,7 @@ class Session:
                                          data.get('orientation_locked',bool(data.get('face_token')) or
                                                   data.get('orientation_label','保持原方向') not in ('','保持原方向')))
             claimed.update(members)
+        restored_units = set(kept)
         for uid, body in self.bodies.items():
             if uid not in claimed:
                 kept[uid] = PrintUnit(uid, body.name, [uid])
@@ -240,11 +241,23 @@ class Session:
             and self.bodies[remap(s['uid'])].color == s.get('color', self.bodies[remap(s['uid'])].color)
             and self.bodies[remap(s['uid'])].face_colors == s.get('faceColors', self.bodies[remap(s['uid'])].face_colors)
             for s in rules.get('sources', []))
-        self.invalidate_layout()
-        if unchanged and not notices:
-            self.plates = [Plate(**p) for p in rules.get('plates', [])]
-            self.placements = {p['unit']: Placement(**p) for p in rules.get('placements', [])
-                               if p['unit'] in self.units}
-        else:
-            notices.append('源几何或颜色发生变化，请重新检查贴板方向并排盘。')
+        # Positions are user intent, not proof that the current geometry is valid.
+        # Restore only units whose complete membership survived; validation checks
+        # their new geometry before export. Never assign an invalid group's position
+        # to a fallback single body that happens to have the same unit ID.
+        self.plates = [Plate(**p) for p in rules.get('plates', [])]
+        self.placements = {p['unit']: Placement(**p) for p in rules.get('placements', [])
+                           if p['unit'] in restored_units}
+        changed_colors = {remap(s['uid']) for s in rules.get('sources', [])
+                          if remap(s['uid']) in self.bodies and remap(s['uid']) not in self.color_overrides
+                          and self.bodies[remap(s['uid'])].color.upper() !=
+                              s.get('color', self.bodies[remap(s['uid'])].color).upper()}
+        affected_plates = {p.plate for p in self.placements.values()
+                           if changed_colors.intersection(self.units[p.unit].members)}
+        for plate in self.plates:
+            if plate.index in affected_plates:
+                plate.allow_mixed = False
+        if not unchanged:
+            notices.append(f'源模型或颜色已更新；已保留 {len(self.placements)} 个可恢复盘位，'
+                           '请检查新增单元、碰撞与贴板方向。')
         return notices

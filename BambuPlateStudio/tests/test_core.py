@@ -105,7 +105,7 @@ class GeometryTests(unittest.TestCase):
             arrange(session, Bed(256,256,256))
         self.assertEqual(original, session.bodies['a'].vertices)
 
-    def test_rules_restore_and_geometry_change_invalidates_layout(self):
+    def test_rules_restore_and_geometry_change_preserves_group_layout(self):
         session = Session([cube(), cube('b', low=(30,0,0))])
         session.config['gap']=5
         session.group(list(session.units), '原位组')
@@ -118,7 +118,9 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(restored.placements), 1)
         changed = Session([cube(size=(21,20,20)), cube('b', low=(30,0,0))])
         self.assertTrue(changed.apply_rules(rules))
-        self.assertFalse(changed.placements)
+        self.assertEqual(changed.placements, session.placements)
+        self.assertEqual(changed.units, session.units)
+        self.assertEqual(validate(changed, Bed(256,256,256))[0], [])
 
     def test_mixed_face_colors_require_decision(self):
         body = cube()
@@ -141,11 +143,13 @@ class GeometryTests(unittest.TestCase):
         rules['units'][0]['rotation']=((-1,0,0),(0,1,0),(0,0,1))
         with self.assertRaises(ValueError):session.apply_rules(rules)
 
-    def test_color_change_invalidates_saved_layout(self):
+    def test_color_change_preserves_saved_layout(self):
         session=Session([cube()]);arrange(session,Bed(256,256,256))
         changed=Session([cube(color='#FF0000')])
         self.assertTrue(changed.apply_rules(session.rules()))
-        self.assertFalse(changed.placements)
+        self.assertEqual(changed.placements,session.placements)
+        self.assertEqual(changed.effective_color('a'),'#FF0000')
+        self.assertEqual(validate(changed,Bed(256,256,256))[0],[])
 
     def test_clearance_is_reserved_around_each_print_unit(self):
         session=Session([cube(),cube('b')])
@@ -204,6 +208,27 @@ class InstalledProfilesTests(unittest.TestCase):
         filament = self.catalog.resolve('filament', session.config['filament'])
         self.assertIn('PETG', filament['filament_type'])
         self.assertTrue(all(float(v) > 200 for v in filament['nozzle_temperature']))
+
+    def test_refreshed_layout_exports_current_geometry_and_rejects_collision(self):
+        original=Session([cube(),cube('b')]);original.plates=[Plate(1)]
+        original.placements={'a':Placement('a',1,60,90),'b':Placement('b',1,150,90)}
+        changed=Session([cube(size=(21,20,20)),cube('b')])
+        changed.apply_rules(original.rules())
+        with tempfile.TemporaryDirectory() as directory:
+            safe=Path(directory)/'updated.3mf'
+            write_project(safe,changed,self.catalog)
+            with zipfile.ZipFile(safe) as archive:
+                model=ET.fromstring(archive.read('3D/3dmodel.model'))
+                vertices=model.find('c:resources/c:object/c:mesh/c:vertices',{'c':CORE})
+                self.assertEqual(max(float(v.attrib['x']) for v in vertices),21)
+            colliding=Session([cube(size=(110,20,20)),cube('b')])
+            colliding.apply_rules(original.rules())
+            rejected=Path(directory)/'collision.3mf'
+            with self.assertRaisesRegex(ValueError,'实体轮廓间距'):
+                write_project(rejected,colliding,self.catalog)
+            self.assertFalse(rejected.exists())
+        self.assertEqual(changed.placements,original.placements)
+        self.assertEqual(colliding.placements,original.placements)
 
     def test_export_group_and_namespace_regression(self):
         session = Session([cube(), cube('b', low=(30,0,0)), cube('c', '#E8AD23')])
