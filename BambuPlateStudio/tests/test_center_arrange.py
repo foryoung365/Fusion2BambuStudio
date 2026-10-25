@@ -49,6 +49,6 @@ class CenterArrangeTests(unittest.TestCase):
     def test_validation_failure_does_not_replace_existing_layout(self):
         s=Session([cube()]);bed=Bed(100,100,100);arrange(s,bed)
         before=copy.deepcopy(s.placements)
-        s.bodies['a'].face_colors['#FF0000']=1
-        with self.assertRaises(ValueError):arrange(s,bed)
+        s.bodies['untracked']=cube('untracked')
+        with self.assertRaisesRegex(ValueError,'完整且唯一'):arrange(s,bed)
         self.assertEqual(s.placements,before)

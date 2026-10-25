@@ -1,6 +1,7 @@
 """Serializable printing rules kept separate from the source CAD design."""
 import hashlib
 import json
+import math
 import uuid
 from dataclasses import dataclass, field, asdict
 from .geometry import IDENTITY, bounds, rotate, multiply, axis_rotation, affine, mesh_issues, validate_rotation
@@ -8,6 +9,17 @@ from .geometry import IDENTITY, bounds, rotate, multiply, axis_rotation, affine,
 
 def new_id():
     return uuid.uuid4().hex
+
+
+def primary_color(color, face_colors):
+    """Use the largest total surface area; keep ties independent of face order."""
+    base = color.upper()
+    areas = {}
+    for face_color, area in face_colors.items():
+        if math.isfinite(area) and area > 0:
+            key = face_color.upper()
+            areas[key] = areas.get(key, 0.)+area
+    return min(areas, key=lambda c: (-areas[c], c != base, c)) if areas else base
 
 
 @dataclass
@@ -118,7 +130,10 @@ class Session:
         self.invalidate_layout()
 
     def effective_color(self, uid):
-        return self.color_overrides.get(uid, self.bodies[uid].color).upper()
+        if uid in self.color_overrides:
+            return self.color_overrides[uid].upper()
+        body = self.bodies[uid]
+        return primary_color(body.color, body.face_colors)
 
     def material_key(self, unit):
         return tuple(sorted({(self.effective_color(uid), self.color_profiles.get(
@@ -250,8 +265,9 @@ class Session:
                            if p['unit'] in restored_units}
         changed_colors = {remap(s['uid']) for s in rules.get('sources', [])
                           if remap(s['uid']) in self.bodies and remap(s['uid']) not in self.color_overrides
-                          and self.bodies[remap(s['uid'])].color.upper() !=
-                              s.get('color', self.bodies[remap(s['uid'])].color).upper()}
+                          and self.effective_color(remap(s['uid'])) != primary_color(
+                              s.get('color', self.bodies[remap(s['uid'])].color),
+                              s.get('faceColors', self.bodies[remap(s['uid'])].face_colors))}
         affected_plates = {p.plate for p in self.placements.values()
                            if changed_colors.intersection(self.units[p.unit].members)}
         for plate in self.plates:

@@ -7,7 +7,7 @@
 - 读取 Fusion 实体、外观颜色和装配位置，不修改原设计几何。
 - 彩色三维预览、不可拆打印组、点选贴板面。
 - 可为所选件、当前盘或所有盘调用本机 Bambu 引擎推荐朝向，双视图预览后确认；手动方向可锁定。
-- 按颜色自动分盘，优先从打印板中央向周围布局。
+- 按主要颜色自动分盘，多面混色零件提供检查提示；优先从打印板中央向周围布局。
 - 可选当前盘或所有盘，调用 Bambu 引擎建议盘内位置；预览、确认后应用，可撤销。
 - 手动拖动换盘、跨颜色确认、局部解除整体及撤销/重做。
 - 文档内保存摆盘规则；模型修改后保留可恢复盘位，并按当前几何重新检查布局。
@@ -40,6 +40,7 @@ node BambuPlateStudio/tests/test_tree_drop.js
 node BambuPlateStudio/tests/test_plate_navigation.js
 node BambuPlateStudio/tests/test_orientation_preview.js
 node BambuPlateStudio/tests/test_arrangement_preview.js
+node BambuPlateStudio/tests/test_color_review.js
 ```
 
 部分预设测试依赖本机 Bambu Studio，未安装时会跳过相应测试。Fusion 集成脚本依赖专用测试文档，包含开发环境路径；请先阅读脚本中的隔离文档检查，再调整为自己的测试环境，不要直接在生产文档中运行。

@@ -140,7 +140,9 @@ def validate(session, bed):
         for member in unit.members:
             body = session.bodies[member]
             if len(body.face_colors) > 1 and member not in session.color_overrides:
-                errors.append('实体含多种面颜色，请明确选择整件打印颜色：'+body.name)
+                warnings.append(f'第 {placement.plate} 盘：{body.name}（{body.component_path}）含多种面颜色，'
+                                f'已采用主要颜色 {session.effective_color(member)} 作为整件打印颜色；'
+                                '请检查此零件，必要时修改打印颜色或调整分盘。')
             low_z = min(sum(rotation[2][i]*v[i] for i in range(3)) for v in body.vertices)-box[0][2]+placement.z
             if low_z > 0.05:
                 warnings.append(f'整体中的 {body.name} 离板 {low_z:.2f} mm，请核查支撑或贴板方向。')

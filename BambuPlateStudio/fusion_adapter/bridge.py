@@ -278,6 +278,7 @@ class Controller:
                         'path': self.session.bodies[uid].component_path,
                         'color': self.session.effective_color(uid),
                         'mixedFaces': len(self.session.bodies[uid].face_colors) > 1,
+                        'colorOverridden': uid in self.session.color_overrides,
                         'issues': self.session.bodies[uid].issues} for uid in unit.members]
             units.append({'uid': unit.uid, 'name': unit.name, 'members': members, 'size': size,
                           'rotation':unit.rotation,
@@ -604,7 +605,7 @@ class Controller:
             elif action == 'body_color':
                 if data['body'] not in self.session.bodies:raise ValueError('实体引用已失效。')
                 self.session.color_overrides[data['body']] = color_hex(data['color'])
-                self.session.invalidate_layout()
+                self.notices = ['已指定整件打印颜色并保留现有盘位；请检查同盘颜色，必要时换盘或重新按色分盘。']
             elif action == 'arrange':
                 self.update_bed()
                 profiles = [self.session.color_profiles.get(self.session.effective_color(uid),

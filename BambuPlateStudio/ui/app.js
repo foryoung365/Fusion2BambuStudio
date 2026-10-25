@@ -54,10 +54,21 @@ function update(next){state=next;if(next.profiles)profiles=next.profiles;if(!sta
  selectOptions('bed',Object.entries(profiles.beds||{}).map(([key,name])=>({key,name})),state.config.bed);
  for(const id of ['gap','margin','refinement','nozzle'])$(id).value=state.config[id]??'';
  for(const id of ['allowZRotation','allowMixedPlates','includeHidden','enableSupport'])$(id).checked=!!state.config[id];
-  $('bambuExe').value=state.exe||'';renderColors();renderTree();renderInspector();syncViewer();syncPlacementControls();
+  $('bambuExe').value=state.exe||'';renderColors();renderTree();renderInspector();renderColorReview();syncViewer();syncPlacementControls();
  $('footer').textContent=state.lastExport?'已导出：'+state.lastExport.path:'原设计不修改 · 分组和方向编辑可撤销';
  $('connection').textContent=demo?'离线交互测试 · 非 Fusion 实测':'Fusion 插件';
  $('undo').disabled=!state.canUndo;$('redo').disabled=!state.canRedo;
+}
+function renderColorReview(){
+ const root=$('colorReview'),affected=state.units.flatMap(u=>u.placement?u.members.filter(m=>m.mixedFaces&&!m.colorOverridden).map(m=>({u,m})):[]);
+ root.replaceChildren();root.hidden=!affected.length;if(!affected.length)return;
+ root.append(node('p',`以下 ${affected.length} 件零件含多种面颜色，已采用主要颜色作为整件打印颜色。请选择零件检查，必要时修改打印颜色或调整分盘。`));
+ const list=node('div',undefined,'color-review-list');
+ for(const {u,m} of affected){const button=node('button',undefined,'color-review-item'),swatch=node('span',undefined,'swatch');swatch.style.background=m.color;
+  button.append(swatch,node('span',`第 ${u.placement.plate} 盘 · ${m.name} · ${m.color}`));button.title=(m.path?m.path+' · ':'')+'查看零件并调整打印颜色';button.disabled=busy;
+  button.onclick=()=>{if(busy)return;currentPlate=u.placement.plate;closedPlates.delete(currentPlate);choose(u.uid);setMode('layout');$('memberColorsPanel').open=true;const input=$('bodyColor_'+m.uid);input?.scrollIntoView({block:'nearest'});input?.focus();};list.append(button);
+ }
+ root.append(list);
 }
 function renderColors(){const root=$('colorTable');root.replaceChildren();const colors=[...new Set(state.units.flatMap(u=>u.members.map(m=>m.color)))].sort();for(const color of colors){const row=node('div',undefined,'color-row'),label=node('div'),sw=node('span',undefined,'swatch');sw.style.background=color;label.append(sw,document.createTextNode(' '+(color||'未识别')));const select=node('select'),value=state.colorProfiles?.[color]||state.config.filament;let found=false;for(const p of profiles.filaments||[]){const option=node('option',p.name);option.value=p.key;option.selected=p.key===value||p.name===value;found||=option.selected;select.append(option);}if(!found){const o=node('option','请选择兼容耗材');o.value='';o.selected=true;select.prepend(o);}select.onchange=()=>select.value&&request('color_profile',{color,profile:select.value});row.append(label,select);root.append(row);}}
 function dragUnit(e,uid){if(busy){e.preventDefault();return;}e.dataTransfer.setData(MIME,uid);e.dataTransfer.effectAllowed='move';}
@@ -90,7 +101,7 @@ function syncPlacementControls(){const ready=!!state.plates.length&&state.units.
 function renderInspector(){const u=selectedUnit();$('selectedTitle').textContent=u?.name||'尚未选择';$('groupBadge').textContent=u?.members.length>1?'整体锁定':'';$('unitDetails').textContent=u?u.direction+'\n'+u.size.map(v=>v.toFixed(1)).join(' × ')+' mm':'';$('unitName').value=u?.name||'';$('direction').value='keep';
  selectOptions('placementPlate',state.plates.map(p=>({key:String(p.index),name:'第 '+p.index+' 盘'})),String(u?.placement?.plate||currentPlate));
  for(const [id,key]of [['placementX','x'],['placementY','y'],['placementAngle','angle']])$(id).value=u?.placement?.[key]??'';
- const root=$('memberColors');root.replaceChildren();for(const m of u?.members||[]){const box=node('div',undefined,'member-color');box.append(node('label',m.name+(m.mixedFaces?'（需明确整件颜色）':'')));const input=node('input');input.type='color';input.value=m.color||'#808080';const apply=node('button','应用打印颜色');apply.onclick=()=>request('body_color',{body:m.uid,color:input.value});box.append(input,apply);root.append(box);}
+ const root=$('memberColors');root.replaceChildren();for(const m of u?.members||[]){const box=node('div',undefined,'member-color');box.append(node('label',m.name+(m.mixedFaces?(m.colorOverridden?'（已指定整件颜色）':'（主要颜色，待检查）'):'')));const input=node('input');input.id='bodyColor_'+m.uid;input.setAttribute('aria-label',m.name+'的整件打印颜色');input.type='color';input.value=m.color||'#808080';const apply=node('button','应用打印颜色');apply.onclick=()=>request('body_color',{body:m.uid,color:input.value});box.append(input,apply);root.append(box);}
  const messages=$('validation');messages.replaceChildren();for(const error of state.errors||[])messages.append(node('p',error,'validation-error'));for(const warning of state.warnings||[])messages.append(node('p',warning,'validation-warning'));
  syncOrientationControls();
 }

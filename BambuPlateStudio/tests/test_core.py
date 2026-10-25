@@ -122,14 +122,16 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(changed.units, session.units)
         self.assertEqual(validate(changed, Bed(256,256,256))[0], [])
 
-    def test_mixed_face_colors_require_decision(self):
+    def test_mixed_face_colors_warn_and_allow_manual_override(self):
         body = cube()
         body.face_colors['#FF0000'] = 1.
         session = Session([body])
-        with self.assertRaisesRegex(ValueError, '多种面颜色'):
-            arrange(session, Bed(256,256,256))
+        warnings = arrange(session, Bed(256,256,256))
+        self.assertTrue(any('多种面颜色' in warning for warning in warnings))
         session.color_overrides['a'] = '#FF0000'
-        arrange(session, Bed(256,256,256))
+        warnings = arrange(session, Bed(256,256,256))
+        self.assertFalse(any('多种面颜色' in warning for warning in warnings))
+        self.assertEqual(session.effective_color('a'), '#FF0000')
 
     def test_duplicate_group_request_is_atomic(self):
         session=Session([cube(),cube('b')])
@@ -208,6 +210,23 @@ class InstalledProfilesTests(unittest.TestCase):
         filament = self.catalog.resolve('filament', session.config['filament'])
         self.assertIn('PETG', filament['filament_type'])
         self.assertTrue(all(float(v) > 200 for v in filament['nozzle_temperature']))
+
+    def test_dominant_face_color_exports_as_one_slot_with_review_warning(self):
+        body=cube('mixed',color='#000000')
+        body.face_colors={'#000000':1.,'#FF0000':9.}
+        session=Session([body,cube('red',color='#FF0000')])
+        bed=Bed.from_profile(self.catalog.resolve('machine',session.config['printer']))
+        arrange(session,bed)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'dominant_color.3mf'
+            result=write_project(path,session,self.catalog)
+            self.assertEqual(inspect_project(path),{'bodies':2,'objects':2,'plates':1,'colors':1,'hasGcode':False})
+            self.assertTrue(any(body.name in w and '#FF0000' in w for w in result['warnings']))
+            with zipfile.ZipFile(path) as archive:
+                settings=json.loads(archive.read('Metadata/project_settings.config'))
+                self.assertEqual(settings['filament_colour'],['#FF0000'])
+        self.assertEqual(body.color,'#000000')
+        self.assertEqual(session.color_overrides,{})
 
     def test_refreshed_layout_exports_current_geometry_and_rejects_collision(self):
         original=Session([cube(),cube('b')]);original.plates=[Plate(1)]
